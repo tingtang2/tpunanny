@@ -21,6 +21,21 @@ tn.babysit(
 
 `ssh_script` runs over SSH after the TPU becomes active. `startup_script` is passed as TPU metadata (`startup-script`) and runs when the TPU VM boots.
 
+By default, `babysit()` also ensures a regional Cloud NAT exists for the `default` VPC before TPU creation. This is useful when TPU VMs are created without external IPs. You can disable or customize this behavior:
+
+```python
+tn.babysit(
+    idxs=slice(1),
+    tpu_type='v6e-8',
+    zone='europe-west4-a',
+    project_id='my_gcs_project_id',
+    ensure_nat=True,
+    network='default',
+)
+```
+
+If `tpunanny` has to create the router or NAT, it waits 60 seconds before creating TPUs so the new NAT has time to propagate.
+
 # Monitoring TPUs
 
 I included a helper utility to monitor the state of all TPUs within a single Google Cloud project:

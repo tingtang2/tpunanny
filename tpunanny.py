@@ -1,9 +1,10 @@
 import time
 import subprocess
 import threading
-from google.cloud import tpu_v2
+from google.cloud import tpu_v2alpha1
 from google.api_core.exceptions import NotFound
-client = tpu_v2.TpuClient()
+
+client = tpu_v2alpha1.TpuClient()
 _stop_event = threading.Event()
 _threads = []
 
@@ -16,6 +17,73 @@ def get_runtime(tpu_type):
     else: return 'tpu-ubuntu2204-base'
 
 
+def _region_from_zone(zone):
+    parts = zone.rsplit('-', 1)
+    if len(parts) != 2:
+        raise ValueError(f'Invalid zone: {zone}')
+    return parts[0]
+
+
+def _run_gcloud(cmd):
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def _ensure_cloud_nat(zone, project_id, network='default'):
+    """Creates a regional Cloud Router and NAT if they do not already exist."""
+    region = _region_from_zone(zone)
+    router_name = f'tpunanny-router-{network}-{region}'
+    nat_name = f'tpunanny-nat-{network}-{region}'
+    created_anything = False
+
+    router_describe = _run_gcloud([
+        'gcloud', 'compute', 'routers', 'describe', router_name,
+        f'--region={region}',
+        f'--project={project_id}',
+        '--format=value(name)',
+    ])
+    if router_describe.returncode != 0:
+        print(f'[nat] creating Cloud Router {router_name} in {region} on network {network}...')
+        router_create = _run_gcloud([
+            'gcloud', 'compute', 'routers', 'create', router_name,
+            f'--network={network}',
+            f'--region={region}',
+            f'--project={project_id}',
+            '--quiet',
+        ])
+        if router_create.returncode != 0:
+            raise RuntimeError(
+                f'Failed to create Cloud Router {router_name}: {router_create.stderr.strip() or router_create.stdout.strip()}'
+            )
+        created_anything = True
+
+    nat_describe = _run_gcloud([
+        'gcloud', 'compute', 'routers', 'nats', 'describe', nat_name,
+        f'--router={router_name}',
+        f'--region={region}',
+        f'--project={project_id}',
+        '--format=value(name)',
+    ])
+    if nat_describe.returncode != 0:
+        print(f'[nat] creating Cloud NAT {nat_name} in {region}...')
+        nat_create = _run_gcloud([
+            'gcloud', 'compute', 'routers', 'nats', 'create', nat_name,
+            f'--router={router_name}',
+            f'--region={region}',
+            '--nat-all-subnet-ip-ranges',
+            '--auto-allocate-nat-external-ips',
+            f'--project={project_id}',
+            '--quiet',
+        ])
+        if nat_create.returncode != 0:
+            raise RuntimeError(
+                f'Failed to create Cloud NAT {nat_name}: {nat_create.stderr.strip() or nat_create.stdout.strip()}'
+            )
+        created_anything = True
+
+    print(f'[nat] Cloud NAT ready: {nat_name} via router {router_name} in {region}.')
+    return created_anything
+
+
 def _create(tpu_id, tpu_type, zone, project_id, startup_script=None):
     parent = f'projects/{project_id}/locations/{zone}'
 
@@ -23,22 +91,22 @@ def _create(tpu_id, tpu_type, zone, project_id, startup_script=None):
     if startup_script is not None:
         node_metadata['startup-script'] = startup_script
 
-    queued_resource = tpu_v2.QueuedResource(
-        tpu=tpu_v2.QueuedResource.Tpu(
+    queued_resource = tpu_v2alpha1.QueuedResource(
+        tpu=tpu_v2alpha1.QueuedResource.Tpu(
             node_spec=[
-                tpu_v2.QueuedResource.Tpu.NodeSpec(
+                tpu_v2alpha1.QueuedResource.Tpu.NodeSpec(
                     parent=parent,
                     node_id=tpu_id,
-                    node=tpu_v2.Node(
+                    node=tpu_v2alpha1.Node(
                         accelerator_type=tpu_type,
                         runtime_version=get_runtime(tpu_type),
-                        network_config=tpu_v2.NetworkConfig(enable_external_ips=True),
+                        network_config=tpu_v2alpha1.NetworkConfig(enable_external_ips=False),
                         metadata=node_metadata,
                     ),
                 )
             ]
         ),
-        spot=tpu_v2.QueuedResource.Spot(),
+        spot=tpu_v2alpha1.QueuedResource.Spot(),
     )
 
     operation = client.create_queued_resource(
@@ -52,7 +120,7 @@ def _create(tpu_id, tpu_type, zone, project_id, startup_script=None):
 
 def _delete(tpu_id, zone, project_id):
     qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
-    request = tpu_v2.DeleteQueuedResourceRequest(name=qr_name, force=True)
+    request = tpu_v2alpha1.DeleteQueuedResourceRequest(name=qr_name, force=True)
     operation = client.delete_queued_resource(request=request)
     return operation
 
@@ -176,7 +244,7 @@ def _babysit(tpu_id, tpu_type, zone, project_id, stop_event, ssh_script=None, st
         stop_event.wait(60)
 
 
-def babysit(idxs, tpu_type, zone, project_id, ssh_script=None, startup_script=None):
+def babysit(idxs, tpu_type, zone, project_id, ssh_script=None, startup_script=None, ensure_nat=True, network='default'):
     """Keeps multiple TPUs alive, optionally running `ssh_script` and `startup_script` on boot."""
     global _stop_event, _threads
 
@@ -186,6 +254,12 @@ def babysit(idxs, tpu_type, zone, project_id, ssh_script=None, startup_script=No
         thread.join(timeout=5)
     _threads = []
     _stop_event = threading.Event()
+
+    if ensure_nat:
+        created_nat = _ensure_cloud_nat(zone, project_id, network=network)
+        if created_nat:
+            print('[nat] waiting 60s for Cloud NAT propagation before creating TPUs...')
+            _stop_event.wait(60)
 
     # create and start a thread for each TPU
     threads = []
