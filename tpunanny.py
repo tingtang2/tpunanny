@@ -1,3 +1,4 @@
+import os
 import time
 import subprocess
 import threading
@@ -192,18 +193,58 @@ def _wait_for_absence(qr_name, timeout_seconds=300, poll_seconds=5):
 
 def _run(tpu_id, zone, project_id, ssh_script):
     """Runs `ssh_script` on all workers of a TPU VM via gcloud SSH."""
-    import os
-    output_dir = f'logs/{zone}/{tpu_id}'
+    output_dir = os.path.join('logs', zone, tpu_id)
     os.makedirs(output_dir, exist_ok=True)
+
     cmd = [
-        'gcloud', 'compute', 'tpus', 'tpu-vm', 'ssh', tpu_id,
+        'gcloud', 'alpha', 'compute', 'tpus', 'tpu-vm', 'ssh', tpu_id,
         f'--zone={zone}',
+        '--tunnel-through-iap',
         f'--project={project_id}',
         '--worker=all',
         f'--command={ssh_script}',
-        f'--output-directory={output_dir}',
     ]
-    return subprocess.run(cmd, capture_output=True, text=True)
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    stdout_buffer = []
+    stderr_buffer = []
+
+    def _stream_pipe(stream, label, log_path, buffer):
+        with open(log_path, 'w') as log_file:
+            for line in stream:
+                buffer.append(line)
+                log_file.write(line)
+                log_file.flush()
+                print(f'[{tpu_id}] ssh script {label}: {line.rstrip()}')
+        stream.close()
+
+    stdout_thread = threading.Thread(
+        target=_stream_pipe,
+        args=(process.stdout, 'stdout', os.path.join(output_dir, 'ssh.stdout.log'), stdout_buffer),
+    )
+    stderr_thread = threading.Thread(
+        target=_stream_pipe,
+        args=(process.stderr, 'stderr', os.path.join(output_dir, 'ssh.stderr.log'), stderr_buffer),
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    returncode = process.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=returncode,
+        stdout=''.join(stdout_buffer),
+        stderr=''.join(stderr_buffer),
+    )
 
 
 def _babysit(tpu_id, tpu_type, zone, project_id, stop_event, ssh_script=None, startup_script=None):
