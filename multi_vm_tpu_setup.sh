@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euxo pipefail
 
-source .env
+: "${WANDB_TOKEN:?WANDB_TOKEN must be provided in the startup environment}"
 
 # Needed if using torch xla
 sudo apt-get update
@@ -33,7 +33,7 @@ git config --global user.email "zc2666@columbia.edu"
 git config --global user.name "Ting Chen"
 
 # log into wandb
-wandb login $WANDB_TOKEN
+wandb login "$WANDB_TOKEN"
 
 # grant access to GCP bucket
 BUCKET="demand-v4-checkpoint-storage"   # no gs://
