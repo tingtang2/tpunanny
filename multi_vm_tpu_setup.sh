@@ -18,7 +18,7 @@ sudo apt-get install golang -y
 
 # install uv 
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source "$USER_HOME/.local/bin/env"
+source /root/.local/bin/env
 
 # create project folder, env, clone repo
 mkdir -p "$USER_HOME/loss-spikes-project"

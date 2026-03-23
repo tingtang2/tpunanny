@@ -42,6 +42,8 @@ cd "$HOME/loss-spikes-project"
 source env-loss-spikes/bin/activate
 cd picodo
 
+git pull
+
 # Ensure only one trainer session is active per worker.
 tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 
@@ -49,7 +51,6 @@ tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 
 TRAIN_ARGS=(
   "+model=gpt3xl"
-  "+dataset=fw_gpt2"
   "run_name=${RUN_NAME}"
   "checkpoint.turn_on=true"
   "+checkpoint.gcp_bucket=${CHECKPOINT_BUCKET_PATH}"
@@ -60,6 +61,12 @@ TRAIN_ARGS=(
   "seed=${SEED}"
   "wandb_mode=${WANDB_MODE}"
 )
+
+if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
+  TRAIN_ARGS+=("+dataset=fw_gpt2_100B")
+else
+  TRAIN_ARGS+=("+dataset=fw_gpt2")
+fi
 
 if [[ -n "$LR_ARG" ]]; then
   TRAIN_ARGS+=("$LR_ARG")
