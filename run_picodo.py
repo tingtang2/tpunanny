@@ -38,15 +38,6 @@ if not wandb_token:
     raise RuntimeError('WANDB_TOKEN is missing. Set it in .env or export it in your shell.')
 hf_token = os.environ.get('HF_TOKEN') or _read_env_key(base_dir / '.env', 'HF_TOKEN')
 run_name_prefix = os.environ.get('RUN_NAME_PREFIX', 'exp_gpt3xl')
-
-startup_script = (base_dir / 'multi_vm_tpu_setup.sh').read_text()
-startup_env_exports = [
-    f"export WANDB_TOKEN={shlex.quote(wandb_token)}",
-    f"export RUN_NAME_PREFIX={shlex.quote(run_name_prefix)}",
-]
-if hf_token:
-    startup_env_exports.append(f"export HF_TOKEN={shlex.quote(hf_token)}")
-startup_script = '\n'.join(startup_env_exports) + '\n' + startup_script
 run_script = (base_dir / 'run.sh').read_text()
 
 num_seeds = int(os.environ.get('NUM_SEEDS', '5'))
@@ -75,6 +66,7 @@ follow_log_lines = os.environ.get('FOLLOW_LOG_LINES', '200')
 zones_by_idx = {}
 ssh_script_by_idx = {}
 follow_logs_command_by_idx = {}
+healthcheck_command_by_idx = {}
 for offset, seed in enumerate(seed_idxs):
     seed_zone = seed_zone_map.get(seed, zones[offset % len(zones)])
     zones_by_idx[seed] = seed_zone
@@ -89,7 +81,10 @@ for offset, seed in enumerate(seed_idxs):
         'CONFIG_NAME': config_name,
         'CHECKPOINT_FREQ': checkpoint_freq,
         'USE_CHINCHILLA': use_chinchilla,
+        'WANDB_TOKEN': wandb_token,
     }
+    if hf_token:
+        env_exports['HF_TOKEN'] = hf_token
     if lr_arg:
         env_exports['LR_ARG'] = lr_arg
 
@@ -98,6 +93,7 @@ for offset, seed in enumerate(seed_idxs):
         for key, value in env_exports.items()
     )
     ssh_script_by_idx[seed] = f"{exports_text}\n{run_script}"
+    healthcheck_command_by_idx[seed] = f"tmux has-session -t {shlex.quote(f'picodo_train_seed{seed}')}"
 
     if follow_logs:
         run_name = f"{run_name_prefix}_seed{seed}_lr{lr_tag}"
@@ -112,9 +108,10 @@ tn.babysit(
     ssh_script=run_script,
     ssh_script_by_idx=ssh_script_by_idx,
     follow_logs_command_by_idx=follow_logs_command_by_idx,
+    healthcheck_command_by_idx=healthcheck_command_by_idx,
     zones_by_idx=zones_by_idx,
     # ssh_script='cd loss-spikes-project/picodo && git pull',
     # ssh_script="pkill -9 python3 || true",
-    startup_script=startup_script,
+    startup_script=None,
     ensure_nat=True
 )

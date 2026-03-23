@@ -304,6 +304,7 @@ def _babysit(
     ssh_script=None,
     startup_script=None,
     follow_logs_command=None,
+    healthcheck_command=None,
 ):
     """(Re)creates TPU and runs `ssh_script`."""
     qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
@@ -323,6 +324,12 @@ def _babysit(
             continue
         print(f'[{tpu_id}] TPU status: {create_status}')
         if create_status != 'exists': ran_ssh_script = False
+        elif ran_ssh_script and healthcheck_command is not None:
+            # Script was launched before; ensure the remote trainer is still alive.
+            health_result = _run(tpu_id, zone, project_id, healthcheck_command, log_prefix='healthcheck')
+            if health_result.returncode != 0:
+                print(f'[{tpu_id}] healthcheck failed; will relaunch ssh script.')
+                ran_ssh_script = False
 
         # if an SSH script was provided, wait until TPU is ready, then run it
         if not ran_ssh_script and ssh_script is not None:
@@ -371,6 +378,8 @@ def babysit(
     ssh_script_by_idx=None,
     follow_logs_command=None,
     follow_logs_command_by_idx=None,
+    healthcheck_command=None,
+    healthcheck_command_by_idx=None,
 ):
     """Keeps multiple TPUs alive, optionally running per-index `ssh_script` and `startup_script` on boot."""
     global _stop_event, _threads
@@ -385,6 +394,7 @@ def babysit(
     zones_by_idx = zones_by_idx or {}
     ssh_script_by_idx = ssh_script_by_idx or {}
     follow_logs_command_by_idx = follow_logs_command_by_idx or {}
+    healthcheck_command_by_idx = healthcheck_command_by_idx or {}
     zones_to_use = sorted({zones_by_idx.get(idx, zone) for idx in idxs})
 
     if ensure_nat:
@@ -402,6 +412,7 @@ def babysit(
         idx_zone = zones_by_idx.get(idx, zone)
         idx_ssh_script = ssh_script_by_idx.get(idx, ssh_script)
         idx_follow_logs_command = follow_logs_command_by_idx.get(idx, follow_logs_command)
+        idx_healthcheck_command = healthcheck_command_by_idx.get(idx, healthcheck_command)
         tpu_id = f'tn-{tpu_type}-{idx}'
         thread = threading.Thread(
             target=_babysit,
@@ -414,6 +425,7 @@ def babysit(
                 idx_ssh_script,
                 startup_script,
                 idx_follow_logs_command,
+                idx_healthcheck_command,
             ),
             daemon=True,
         )

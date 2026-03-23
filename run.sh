@@ -1,23 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-READY_FILE="/tmp/loss_spikes_setup_ready"
-MAX_WAIT_SECONDS=1800
-SLEEP_SECONDS=10
-waited=0
+USER_NAME="tingchen"
+USER_HOME="/home/tingchen"
+PROJECT_DIR="$USER_HOME/loss-spikes-project"
+REPO_DIR="$PROJECT_DIR/picodo"
+VENV_DIR="$PROJECT_DIR/env-loss-spikes"
+SETUP_MARKER="$PROJECT_DIR/.tpunanny_setup_done"
 
-
-until [[ -f "$READY_FILE" ]]; do
-  if (( waited >= MAX_WAIT_SECONDS )); then
-    echo "Timed out waiting for setup marker: $READY_FILE"
-    exit 1
-  fi
-  echo "Waiting for setup to complete... (${waited}s/${MAX_WAIT_SECONDS}s)"
-  sleep "$SLEEP_SECONDS"
-  waited=$((waited + SLEEP_SECONDS))
-done
-
-echo "Setup marker detected. Starting training."
+export HOME="$USER_HOME"
+export USER="$USER_NAME"
+export LOGNAME="$USER_NAME"
+mkdir -p "$PROJECT_DIR"
 
 SEED="${SEED:-0}"
 LR_TAG="${LR_TAG:-default}"
@@ -33,21 +27,114 @@ USE_CHINCHILLA="${USE_CHINCHILLA:-false}"
 RUN_NAME="${RUN_NAME_PREFIX}_seed${SEED}_lr${LR_TAG}"
 CHECKPOINT_BUCKET_PATH="${CHECKPOINT_ROOT}/${RUN_NAME}"
 SESSION_NAME="picodo_train_seed${SEED}"
-LOG_DIR="$HOME/loss-spikes-project/picodo/train_logs"
+LOG_DIR="$REPO_DIR/train_logs"
 LOG_FILE="$LOG_DIR/${RUN_NAME}.log"
 
+wait_for_apt_lock() {
+  while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+        sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
+    echo "Waiting for apt/dpkg lock..."
+    sleep 5
+  done
+}
+
+apt_with_retry() {
+  local cmd="$1"
+  local attempts=12
+  local delay=10
+  local i
+  for ((i=1; i<=attempts; i++)); do
+    wait_for_apt_lock
+    if eval "$cmd"; then
+      return 0
+    fi
+    if (( i < attempts )); then
+      echo "apt command failed (attempt $i/$attempts). Retrying in ${delay}s..."
+      sleep "$delay"
+    fi
+  done
+  echo "apt command failed after ${attempts} attempts: $cmd"
+  return 1
+}
+
+ensure_setup() {
+  if [[ -f "$SETUP_MARKER" ]]; then
+    echo "Setup marker exists; skipping bootstrap."
+    return
+  fi
+
+  apt_with_retry "sudo apt-get update"
+  apt_with_retry "sudo apt-get install -y libopenblas-dev tmux golang"
+
+  if [[ ! -x "$USER_HOME/.local/bin/uv" ]]; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+  fi
+  source "$USER_HOME/.local/bin/env"
+
+  if [[ ! -d "$VENV_DIR" ]]; then
+    uv venv "$VENV_DIR" --python=3.11
+  fi
+  source "$VENV_DIR/bin/activate"
+
+  if [[ ! -d "$REPO_DIR/.git" ]]; then
+    git clone https://github.com/tingtang2/picodo.git "$REPO_DIR"
+  fi
+
+  cd "$REPO_DIR"
+  uv pip install -r requirements.txt
+
+  git config --global user.email "zc2666@columbia.edu"
+  git config --global user.name "Ting Chen"
+
+  if [[ -n "${WANDB_TOKEN:-}" ]]; then
+    wandb login "$WANDB_TOKEN"
+  fi
+
+  BUCKET="demand-v4-checkpoint-storage"
+  PREFIX="picodo_ckpts"
+  PROJECT_ID="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/project/project-id)"
+  SA_EMAIL="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email)"
+  INSTANCE_NAME="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/name)"
+  WORKER_ID="${INSTANCE_NAME##*-}"
+
+  if [[ "$WORKER_ID" == "0" ]]; then
+    gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+      --member="serviceAccount:${SA_EMAIL}" \
+      --role="roles/storage.objectAdmin" \
+      --project="${PROJECT_ID}" || true
+
+    echo "ok $(date -u +%FT%TZ)" | gcloud storage cp - "gs://${BUCKET}/${PREFIX}/iam_probe.txt"
+    gcloud storage cat "gs://${BUCKET}/${PREFIX}/iam_probe.txt" >/dev/null
+    gcloud storage rm "gs://${BUCKET}/${PREFIX}/iam_probe.txt"
+    echo "Bucket R/W verification passed."
+  fi
+
+  if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
+    python3 download_fineweb.py \
+      --dataset=fineweb \
+      --full_fineweb100b=True \
+      --num_chunks=283 \
+      --stream_write=True \
+      --shard_dir=/dev/shm/fineweb_shards \
+      --hf_cache_dir=/dev/shm/hf_cache
+  else
+    python3 download_fineweb.py
+  fi
+
+  touch "$SETUP_MARKER"
+}
+
+ensure_setup
+
+source "$USER_HOME/.local/bin/env"
+source "$VENV_DIR/bin/activate"
+cd "$REPO_DIR"
+
+git pull --ff-only || true
 mkdir -p "$LOG_DIR"
-
-cd "$HOME/loss-spikes-project"
-source env-loss-spikes/bin/activate
-cd picodo
-
-git pull
 
 # Ensure only one trainer session is active per worker.
 tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
-
-
 
 TRAIN_ARGS=(
   "+model=gpt3xl"
