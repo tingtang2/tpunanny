@@ -2,23 +2,28 @@
 set -euxo pipefail
 
 : "${WANDB_TOKEN:?WANDB_TOKEN must be provided in the startup environment}"
+READY_FILE="/tmp/loss_spikes_setup_ready"
+rm -f "$READY_FILE"
+USER_HOME="/home/tingchen"
+
+cd "$USER_HOME"
 
 # Needed if using torch xla
 sudo apt-get update
 
-sudo apt-get install libopenblas-dev -y
+sudo apt-get install libopenblas-dev tmux -y
 
 # install golang for jax-smi
 sudo apt-get install golang -y
 
 # install uv 
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.local/bin/env 
+source "$USER_HOME/.local/bin/env"
 
 # create project folder, env, clone repo
-mkdir loss-spikes-project
+mkdir -p "$USER_HOME/loss-spikes-project"
 
-cd loss-spikes-project
+cd "$USER_HOME/loss-spikes-project"
 
 uv venv env-loss-spikes --python=3.11
 source env-loss-spikes/bin/activate
@@ -69,4 +74,17 @@ else
 fi
 
 # download fineweb
-python3 /home/tingchen/loss-spikes-project/picodo/download_fineweb.py
+if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
+  python3 download_fineweb.py \
+    --dataset=fineweb \
+    --full_fineweb100b=True \
+    --num_chunks=283 \
+    --stream_write=True \
+    --shard_dir=/dev/shm/fineweb_shards \
+    --hf_cache_dir=/dev/shm/hf_cache
+else
+  python3 download_fineweb.py
+fi
+
+# mark setup completion for run.sh readiness checks
+touch "$READY_FILE"

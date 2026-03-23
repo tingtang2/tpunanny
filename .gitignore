@@ -5,3 +5,5 @@ deprecated
 logs
 
 .env
+
+exp_*

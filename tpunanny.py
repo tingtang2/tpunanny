@@ -157,24 +157,26 @@ def _delete_all_suspended(project_id):
 def _recreate(tpu_id, tpu_type, zone, project_id, startup_script=None):
     qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
     
-    try:
-        # get TPU status
-        tpu_info = client.get_queued_resource(name=qr_name)
-        tpu_state = tpu_info.state.state.name
-        
-        # if TPU is unhealthy, delete it and create a new one
-        if tpu_state in ('FAILED', 'SUSPENDED'):
-            _delete(tpu_id, zone, project_id).result()
-            if not _wait_for_absence(qr_name):
-                print(f'[{tpu_id}] waiting for deletion timed out; will retry.')
-                return 'deleting'
-            _create(tpu_id, tpu_type, zone, project_id, startup_script)
-            return 're-created'
-
-    except NotFound as e:
+    tpu_state = _get_tpu_state(qr_name)
+    if tpu_state is None:
         # if TPU doesn't exist, create it
         _create(tpu_id, tpu_type, zone, project_id, startup_script)
         return 'created'
+
+    print(f'[{tpu_id}] observed TPU state={tpu_state}')
+
+    # if TPU is unhealthy, delete it and create a new one
+    if tpu_state in ('FAILED', 'SUSPENDED', 'PREEMPTED'):
+        _request_delete(tpu_id, zone, project_id)
+        if not _wait_for_absence(qr_name):
+            print(f'[{tpu_id}] waiting for deletion timed out; will retry.')
+            return 'deleting'
+        _create(tpu_id, tpu_type, zone, project_id, startup_script)
+        return 're-created'
+
+    # deletion in flight; wait for NotFound then recreate on next loop
+    if tpu_state == 'DELETING':
+        return 'deleting'
 
     return 'exists'
 
@@ -191,7 +193,31 @@ def _wait_for_absence(qr_name, timeout_seconds=300, poll_seconds=5):
     return False
 
 
-def _run(tpu_id, zone, project_id, ssh_script):
+def _get_tpu_state(qr_name):
+    """Returns queued resource state name or None when resource is absent."""
+    try:
+        tpu_info = client.get_queued_resource(name=qr_name)
+        return tpu_info.state.state.name
+    except NotFound:
+        return None
+
+
+def _request_delete(tpu_id, zone, project_id):
+    """
+    Requests queued resource deletion without waiting on operation.result().
+    This avoids occasional response type conversion issues in the client.
+    """
+    try:
+        _delete(tpu_id, zone, project_id)
+        return True
+    except NotFound:
+        return True
+    except Exception as e:
+        print(f'[{tpu_id}] delete request failed: {e}')
+        return False
+
+
+def _run(tpu_id, zone, project_id, ssh_script, log_prefix='ssh'):
     """Runs `ssh_script` on all workers of a TPU VM via gcloud SSH."""
     output_dir = os.path.join('logs', zone, tpu_id)
     os.makedirs(output_dir, exist_ok=True)
@@ -226,11 +252,11 @@ def _run(tpu_id, zone, project_id, ssh_script):
 
     stdout_thread = threading.Thread(
         target=_stream_pipe,
-        args=(process.stdout, 'stdout', os.path.join(output_dir, 'ssh.stdout.log'), stdout_buffer),
+        args=(process.stdout, 'stdout', os.path.join(output_dir, f'{log_prefix}.stdout.log'), stdout_buffer),
     )
     stderr_thread = threading.Thread(
         target=_stream_pipe,
-        args=(process.stderr, 'stderr', os.path.join(output_dir, 'ssh.stderr.log'), stderr_buffer),
+        args=(process.stderr, 'stderr', os.path.join(output_dir, f'{log_prefix}.stderr.log'), stderr_buffer),
     )
     stdout_thread.start()
     stderr_thread.start()
@@ -247,17 +273,54 @@ def _run(tpu_id, zone, project_id, ssh_script):
     )
 
 
-def _babysit(tpu_id, tpu_type, zone, project_id, stop_event, ssh_script=None, startup_script=None):
+def _follow_logs(tpu_id, zone, project_id, stop_event, follow_logs_command, retry_seconds=10):
+    """Continuously tails logs on TPU workers, reconnecting if SSH/IAP drops."""
+    qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
+    while not stop_event.is_set():
+        tpu_state = _get_tpu_state(qr_name)
+        if tpu_state != 'ACTIVE':
+            stop_event.wait(20)
+            continue
+
+        print(f'[{tpu_id}] starting follow-logs session...')
+        result = _run(tpu_id, zone, project_id, follow_logs_command, log_prefix='follow_logs')
+        print(f'[{tpu_id}] follow-logs session exited with code {result.returncode}.')
+        if stop_event.is_set():
+            break
+        if result.returncode != 0:
+            stderr_text = (result.stderr or '').upper()
+            if any(token in stderr_text for token in ('DELETING', 'PREEMPTED', 'NOT_FOUND')):
+                stop_event.wait(20)
+                continue
+        stop_event.wait(retry_seconds)
+
+
+def _babysit(
+    tpu_id,
+    tpu_type,
+    zone,
+    project_id,
+    stop_event,
+    ssh_script=None,
+    startup_script=None,
+    follow_logs_command=None,
+):
     """(Re)creates TPU and runs `ssh_script`."""
     qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
     ran_ssh_script = False
+    follow_logs_thread = None
 
     print(f'[{tpu_id}] starting to babysit...')
     while not stop_event.is_set():
 
         # check if TPU is healthy
         print(f'[{tpu_id}] checking TPU status...')
-        create_status = _recreate(tpu_id, tpu_type, zone, project_id, startup_script)
+        try:
+            create_status = _recreate(tpu_id, tpu_type, zone, project_id, startup_script)
+        except Exception as e:
+            print(f'[{tpu_id}] recreate check failed: {e}')
+            stop_event.wait(10)
+            continue
         print(f'[{tpu_id}] TPU status: {create_status}')
         if create_status != 'exists': ran_ssh_script = False
 
@@ -266,10 +329,11 @@ def _babysit(tpu_id, tpu_type, zone, project_id, stop_event, ssh_script=None, st
 
             # wait until TPU is ready
             while not stop_event.is_set():
-                tpu_info = client.get_queued_resource(name=qr_name)
-                tpu_state = tpu_info.state.state.name
-                print(f'[{tpu_id}] TPU state={tpu_state}')
-                if tpu_state == 'ACTIVE': break
+                tpu_state = _get_tpu_state(qr_name)
+                state_text = tpu_state if tpu_state is not None else 'NOT_FOUND'
+                print(f'[{tpu_id}] TPU state={state_text}')
+                if tpu_state == 'ACTIVE':
+                    break
                 stop_event.wait(10)
 
             if stop_event.is_set(): break
@@ -280,13 +344,35 @@ def _babysit(tpu_id, tpu_type, zone, project_id, stop_event, ssh_script=None, st
             print(f'[{tpu_id}] ssh script finished with exit code {result.returncode}.')
             ran_ssh_script = True
 
+            if follow_logs_command is not None and follow_logs_thread is None:
+                print(f'[{tpu_id}] follow-logs mode enabled.')
+                follow_logs_thread = threading.Thread(
+                    target=_follow_logs,
+                    args=(tpu_id, zone, project_id, stop_event, follow_logs_command),
+                    daemon=True,
+                )
+                follow_logs_thread.start()
+
         # wait before checking on the TPU again
         print(f'[{tpu_id}] sleeping...')
         stop_event.wait(60)
 
 
-def babysit(idxs, tpu_type, zone, project_id, ssh_script=None, startup_script=None, ensure_nat=True, network='default'):
-    """Keeps multiple TPUs alive, optionally running `ssh_script` and `startup_script` on boot."""
+def babysit(
+    idxs,
+    tpu_type,
+    zone,
+    project_id,
+    ssh_script=None,
+    startup_script=None,
+    ensure_nat=True,
+    network='default',
+    zones_by_idx=None,
+    ssh_script_by_idx=None,
+    follow_logs_command=None,
+    follow_logs_command_by_idx=None,
+):
+    """Keeps multiple TPUs alive, optionally running per-index `ssh_script` and `startup_script` on boot."""
     global _stop_event, _threads
 
     # stop any previously running babysit threads
@@ -296,19 +382,39 @@ def babysit(idxs, tpu_type, zone, project_id, ssh_script=None, startup_script=No
     _threads = []
     _stop_event = threading.Event()
 
+    zones_by_idx = zones_by_idx or {}
+    ssh_script_by_idx = ssh_script_by_idx or {}
+    follow_logs_command_by_idx = follow_logs_command_by_idx or {}
+    zones_to_use = sorted({zones_by_idx.get(idx, zone) for idx in idxs})
+
     if ensure_nat:
-        created_nat = _ensure_cloud_nat(zone, project_id, network=network)
-        if created_nat:
+        created_any_nat = False
+        for zone_to_use in zones_to_use:
+            created_nat = _ensure_cloud_nat(zone_to_use, project_id, network=network)
+            created_any_nat = created_any_nat or created_nat
+        if created_any_nat:
             print('[nat] waiting 60s for Cloud NAT propagation before creating TPUs...')
             _stop_event.wait(60)
 
     # create and start a thread for each TPU
     threads = []
     for idx in idxs:
+        idx_zone = zones_by_idx.get(idx, zone)
+        idx_ssh_script = ssh_script_by_idx.get(idx, ssh_script)
+        idx_follow_logs_command = follow_logs_command_by_idx.get(idx, follow_logs_command)
         tpu_id = f'tn-{tpu_type}-{idx}'
         thread = threading.Thread(
             target=_babysit,
-            args=(tpu_id, tpu_type, zone, project_id, _stop_event, ssh_script, startup_script),
+            args=(
+                tpu_id,
+                tpu_type,
+                idx_zone,
+                project_id,
+                _stop_event,
+                idx_ssh_script,
+                startup_script,
+                idx_follow_logs_command,
+            ),
             daemon=True,
         )
         thread.start()
