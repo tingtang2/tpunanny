@@ -59,6 +59,7 @@ batch_size = os.environ.get('BATCH_SIZE', '64')
 wandb_mode = os.environ.get('WANDB_MODE', 'online')
 config_name = os.environ.get('CONFIG_NAME', 'wortsman_default')
 checkpoint_freq = os.environ.get('CHECKPOINT_FREQ', '10000')
+eval_freq = os.environ.get('EVAL_FREQ', '100')
 use_chinchilla = os.environ.get('USE_CHINCHILLA', 'false')
 follow_logs = os.environ.get('FOLLOW_LOGS', 'false').strip().lower() == 'true'
 follow_log_lines = os.environ.get('FOLLOW_LOG_LINES', '200')
@@ -80,6 +81,7 @@ for offset, seed in enumerate(seed_idxs):
         'WANDB_MODE': wandb_mode,
         'CONFIG_NAME': config_name,
         'CHECKPOINT_FREQ': checkpoint_freq,
+        'EVAL_FREQ': eval_freq,
         'USE_CHINCHILLA': use_chinchilla,
         'WANDB_TOKEN': wandb_token,
     }

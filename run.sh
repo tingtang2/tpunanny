@@ -20,6 +20,7 @@ RUN_NAME_PREFIX="${RUN_NAME_PREFIX:-exp_gpt3xl}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 WANDB_MODE="${WANDB_MODE:-online}"
 CONFIG_NAME="${CONFIG_NAME:-wortsman_default}"
+EVAL_FREQ="${EVAL_FREQ:-100}"
 CHECKPOINT_FREQ="${CHECKPOINT_FREQ:-10000}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-gs://demand-v4-checkpoint-storage/picodo_ckpts}"
 USE_CHINCHILLA="${USE_CHINCHILLA:-false}"
@@ -137,17 +138,24 @@ mkdir -p "$LOG_DIR"
 tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 
 TRAIN_ARGS=(
-  "+model=gpt3xl"
   "run_name=${RUN_NAME}"
   "checkpoint.turn_on=true"
   "+checkpoint.gcp_bucket=${CHECKPOINT_BUCKET_PATH}"
   "checkpoint.start_step=null"
   "checkpoint.checkpoint_steps=null"
   "checkpoint.checkpoint_every_steps=${CHECKPOINT_FREQ}"
+  "eval_every_steps=${EVAL_FREQ}"
   "opt.batch_size=${BATCH_SIZE}"
   "seed=${SEED}"
   "wandb_mode=${WANDB_MODE}"
 )
+
+if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
+  TRAIN_ARGS+=("+model=gpt3xl")
+else
+  TRAIN_ARGS+=("+model=gpt2m")
+fi
+
 
 if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
   TRAIN_ARGS+=("+dataset=fw_gpt2_100B")
