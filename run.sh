@@ -30,6 +30,10 @@ CHECKPOINT_BUCKET_PATH="${CHECKPOINT_ROOT}/${RUN_NAME}"
 SESSION_NAME="picodo_train_seed${SEED}"
 LOG_DIR="$REPO_DIR/train_logs"
 LOG_FILE="$LOG_DIR/${RUN_NAME}.log"
+STATUS_DIR="$REPO_DIR/train_status"
+DONE_MARKER="$STATUS_DIR/${RUN_NAME}.done"
+FAILED_MARKER="$STATUS_DIR/${RUN_NAME}.failed"
+STATUS_FILE="$STATUS_DIR/${RUN_NAME}.exitcode"
 
 wait_for_apt_lock() {
   while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
@@ -133,9 +137,20 @@ cd "$REPO_DIR"
 
 git pull --ff-only || true
 mkdir -p "$LOG_DIR"
+mkdir -p "$STATUS_DIR"
 
-# Ensure only one trainer session is active per worker.
-tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+if [[ -f "$DONE_MARKER" ]]; then
+  echo "Completion marker exists for $RUN_NAME; skipping launch."
+  echo "Run already reached final checkpoint."
+  exit 0
+fi
+
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+  echo "tmux session '$SESSION_NAME' is already running; skipping launch."
+  exit 0
+fi
+
+rm -f "$FAILED_MARKER" "$STATUS_FILE"
 
 TRAIN_ARGS=(
   "run_name=${RUN_NAME}"
@@ -174,10 +189,11 @@ fi
 TRAIN_ARGS+=("--config-name=${CONFIG_NAME}")
 
 printf -v ESCAPED_TRAIN_ARGS '%q ' "${TRAIN_ARGS[@]}"
-TMUX_CMD="python3 -u main.py ${ESCAPED_TRAIN_ARGS} >> \"$LOG_FILE\" 2>&1"
+TMUX_CMD="bash -lc 'cd \"$REPO_DIR\"; python3 -u main.py ${ESCAPED_TRAIN_ARGS} >> \"$LOG_FILE\" 2>&1; exit_code=\$?; echo \$exit_code > \"$STATUS_FILE\"; if [[ \$exit_code -eq 0 ]] && grep -q \"Saved final checkpoint at step\" \"$LOG_FILE\"; then touch \"$DONE_MARKER\"; rm -f \"$FAILED_MARKER\"; else touch \"$FAILED_MARKER\"; fi; exit \$exit_code'"
 
 tmux new-session -d -s "$SESSION_NAME" "$TMUX_CMD"
 echo "Started tmux session '$SESSION_NAME'."
 echo "Run name: $RUN_NAME"
 echo "Checkpoint path: $CHECKPOINT_BUCKET_PATH"
 echo "Logs: $LOG_FILE"
+echo "Completion marker: $DONE_MARKER"

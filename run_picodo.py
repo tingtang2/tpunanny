@@ -81,6 +81,7 @@ zones_by_idx = {}
 ssh_script_by_idx = {}
 follow_logs_command_by_idx = {}
 healthcheck_command_by_idx = {}
+completion_command_by_idx = {}
 for offset, seed in enumerate(seed_idxs):
     seed_zone = seed_zone_map.get(seed, zones[offset % len(zones)])
     zones_by_idx[seed] = seed_zone
@@ -109,6 +110,8 @@ for offset, seed in enumerate(seed_idxs):
     )
     ssh_script_by_idx[seed] = f"{exports_text}\n{run_script}"
     healthcheck_command_by_idx[seed] = f"tmux has-session -t {shlex.quote(f'picodo_train_seed{seed}')}"
+    done_marker = f"/home/tingchen/loss-spikes-project/picodo/train_status/{run_name_prefix}_seed{seed}_lr{lr_tag}.done"
+    completion_command_by_idx[seed] = f"test -f {shlex.quote(done_marker)}"
 
     if follow_logs:
         run_name = f"{run_name_prefix}_seed{seed}_lr{lr_tag}"
@@ -124,6 +127,8 @@ tn.babysit(
     ssh_script_by_idx=ssh_script_by_idx,
     follow_logs_command_by_idx=follow_logs_command_by_idx,
     healthcheck_command_by_idx=healthcheck_command_by_idx,
+    completion_command_by_idx=completion_command_by_idx,
+    delete_on_completion=True,
     zones_by_idx=zones_by_idx,
     tpu_id_prefix=tpu_id_prefix,
     # ssh_script='cd loss-spikes-project/picodo && git pull',
