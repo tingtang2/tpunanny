@@ -380,6 +380,7 @@ def babysit(
     follow_logs_command_by_idx=None,
     healthcheck_command=None,
     healthcheck_command_by_idx=None,
+    tpu_id_prefix='tn',
 ):
     """Keeps multiple TPUs alive, optionally running per-index `ssh_script` and `startup_script` on boot."""
     global _stop_event, _threads
@@ -413,7 +414,7 @@ def babysit(
         idx_ssh_script = ssh_script_by_idx.get(idx, ssh_script)
         idx_follow_logs_command = follow_logs_command_by_idx.get(idx, follow_logs_command)
         idx_healthcheck_command = healthcheck_command_by_idx.get(idx, healthcheck_command)
-        tpu_id = f'tn-{tpu_type}-{idx}'
+        tpu_id = f'{tpu_id_prefix}-{tpu_type}-{idx}'
         thread = threading.Thread(
             target=_babysit,
             args=(

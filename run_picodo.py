@@ -30,6 +30,14 @@ def _parse_seed_zone_map(raw):
     return mapping
 
 
+def _sanitize_exp_tag(raw):
+    cleaned = ''.join(ch.lower() if ch.isalnum() else '-' for ch in raw.strip())
+    while '--' in cleaned:
+        cleaned = cleaned.replace('--', '-')
+    cleaned = cleaned.strip('-')
+    return cleaned or 'default'
+
+
 project_id =  os.environ.get('GCP_PROJECT_ID', 'loss-spikes')
 tpu_type =  os.environ.get('TPU_TYPE', 'v6e-16')
 base_dir = Path(__file__).resolve().parent
@@ -38,6 +46,11 @@ if not wandb_token:
     raise RuntimeError('WANDB_TOKEN is missing. Set it in .env or export it in your shell.')
 hf_token = os.environ.get('HF_TOKEN') or _read_env_key(base_dir / '.env', 'HF_TOKEN')
 run_name_prefix = os.environ.get('RUN_NAME_PREFIX', 'exp_gpt3xl')
+exp_tag = _sanitize_exp_tag(os.environ.get('EXP_TAG', run_name_prefix))
+tpu_id_prefix = f'tn-{exp_tag}'
+if len(tpu_id_prefix) > 24:
+    # Keep room for "-{tpu_type}-{seed}" under TPU name length limits.
+    tpu_id_prefix = tpu_id_prefix[:24].rstrip('-')
 run_script = (base_dir / 'run.sh').read_text()
 
 num_seeds = int(os.environ.get('NUM_SEEDS', '5'))
@@ -112,6 +125,7 @@ tn.babysit(
     follow_logs_command_by_idx=follow_logs_command_by_idx,
     healthcheck_command_by_idx=healthcheck_command_by_idx,
     zones_by_idx=zones_by_idx,
+    tpu_id_prefix=tpu_id_prefix,
     # ssh_script='cd loss-spikes-project/picodo && git pull',
     # ssh_script="pkill -9 python3 || true",
     startup_script=None,
