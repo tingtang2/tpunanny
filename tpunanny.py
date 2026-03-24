@@ -357,6 +357,9 @@ def _babysit(
                 print(f'[{tpu_id}] TPU state={state_text}')
                 if tpu_state == 'ACTIVE':
                     break
+                if tpu_state in ('FAILED', 'SUSPENDED', 'PREEMPTED', 'DELETING', None):
+                    print(f'[{tpu_id}] TPU entered non-runnable state ({state_text}); rechecking lifecycle.')
+                    break
                 stop_event.wait(10)
 
             if stop_event.is_set(): break
