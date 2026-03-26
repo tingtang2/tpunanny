@@ -69,6 +69,7 @@ lr_tag = os.environ.get('LR_TAG', 'default')
 lr_arg = os.environ.get('LR_ARG', '')
 checkpoint_root = os.environ.get('CHECKPOINT_ROOT', 'gs://demand-v4-checkpoint-storage/picodo_ckpts')
 batch_size = os.environ.get('BATCH_SIZE', '64')
+num_tp_devices = os.environ.get('NUM_TP_DEVICES', '1')
 wandb_mode = os.environ.get('WANDB_MODE', 'online')
 config_name = os.environ.get('CONFIG_NAME', 'wortsman_default')
 checkpoint_freq = os.environ.get('CHECKPOINT_FREQ', '10000')
@@ -92,6 +93,7 @@ for offset, seed in enumerate(seed_idxs):
         'RUN_NAME_PREFIX': run_name_prefix,
         'CHECKPOINT_ROOT': checkpoint_root,
         'BATCH_SIZE': batch_size,
+        'NUM_TP_DEVICES': num_tp_devices,
         'WANDB_MODE': wandb_mode,
         'CONFIG_NAME': config_name,
         'CHECKPOINT_FREQ': checkpoint_freq,
@@ -114,7 +116,7 @@ for offset, seed in enumerate(seed_idxs):
     completion_command_by_idx[seed] = f"test -f {shlex.quote(done_marker)}"
 
     if follow_logs:
-        run_name = f"{run_name_prefix}_seed{seed}_lr{lr_tag}"
+        run_name = f"{run_name_prefix}_seed{seed}_lr{lr_tag}_bs{batch_size}"
         log_path = f"/home/tingchen/loss-spikes-project/picodo/train_logs/{run_name}.log"
         follow_logs_command_by_idx[seed] = f"tail -n {shlex.quote(follow_log_lines)} -F {shlex.quote(log_path)}"
 

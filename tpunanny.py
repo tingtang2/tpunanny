@@ -2,6 +2,9 @@ import os
 import time
 import subprocess
 import threading
+import re
+import shlex
+import hashlib
 from google.cloud import tpu_v2alpha1
 from google.api_core.exceptions import NotFound
 
@@ -27,6 +30,160 @@ def _region_from_zone(zone):
 
 def _run_gcloud(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def _sanitize_bucket_name(value):
+    cleaned = re.sub(r'[^a-z0-9-]', '-', value.lower())
+    cleaned = re.sub(r'-+', '-', cleaned).strip('-')
+    if not cleaned:
+        cleaned = 'tpunanny-fineweb'
+    if len(cleaned) > 63:
+        suffix = hashlib.sha1(cleaned.encode('utf-8')).hexdigest()[:8]
+        cleaned = f'{cleaned[:54].rstrip("-")}-{suffix}'
+    if not re.match(r'^[a-z0-9]', cleaned):
+        cleaned = f'tn-{cleaned}'
+    if not re.match(r'.*[a-z0-9]$', cleaned):
+        cleaned = f'{cleaned}0'
+    return cleaned[:63]
+
+
+def _ensure_fineweb_bucket(zone, project_id):
+    """Ensures a regional GCS bucket exists for FineWeb cache in the TPU region."""
+    region = _region_from_zone(zone)
+    bucket_base = f'tpunanny-fineweb-{project_id}-{region}'
+    bucket_name = _sanitize_bucket_name(bucket_base)
+
+    bucket_describe = _run_gcloud([
+        'gcloud', 'storage', 'buckets', 'describe', f'gs://{bucket_name}',
+        f'--project={project_id}',
+        '--format=value(name)',
+    ])
+    if bucket_describe.returncode != 0:
+        print(f'[fineweb] creating regional bucket gs://{bucket_name} in {region}...')
+        bucket_create = _run_gcloud([
+            'gcloud', 'storage', 'buckets', 'create', f'gs://{bucket_name}',
+            f'--project={project_id}',
+            f'--location={region}',
+            '--uniform-bucket-level-access',
+            '--quiet',
+        ])
+        if bucket_create.returncode != 0:
+            raise RuntimeError(
+                f'Failed to create bucket gs://{bucket_name}: {bucket_create.stderr.strip() or bucket_create.stdout.strip()}'
+            )
+
+    print(f'[fineweb] bucket ready: gs://{bucket_name} ({region})')
+    return bucket_name
+
+
+def _infer_fineweb_variant(ssh_script):
+    """Infers dataset flavor from run script/model config."""
+    script = (ssh_script or '').lower()
+    if 'fw_gpt2_100b' in script or '+model=gpt3xl' in script or 'gpt3xl' in script:
+        return 'fineweb100B'
+    return 'fineweb10B'
+
+
+def _build_fineweb_cache_config(bucket_name, variant):
+    if variant == 'fineweb100B':
+        dataset_filename = 'fineweb100B_gpt2.bin'
+    else:
+        dataset_filename = 'fineweb_gpt2.bin'
+    return {
+        'variant': variant,
+        'local_file': f'/home/tingchen/datasets/{dataset_filename}',
+        'bucket_object': f'gs://{bucket_name}/fineweb/{dataset_filename}',
+    }
+
+
+def _fineweb_prefetch_command(fineweb_cache_config):
+    local_file = shlex.quote(fineweb_cache_config['local_file'])
+    bucket_object = shlex.quote(fineweb_cache_config['bucket_object'])
+    return (
+        f'mkdir -p "$(dirname {local_file})"; '
+        f'if [[ -s {local_file} ]]; then '
+        f'echo "[fineweb] local dataset already present: {local_file}"; '
+        f'elif gcloud storage ls {bucket_object} >/dev/null 2>&1; then '
+        f'echo "[fineweb] pulling dataset from bucket: {bucket_object}"; '
+        f'gcloud storage cp {bucket_object} {local_file}; '
+        f'else '
+        f'echo "[fineweb] bucket object missing (will fall back to HF download): {bucket_object}"; '
+        f'fi'
+    )
+
+
+def _wrap_ssh_script_with_fineweb_cache(ssh_script, fineweb_cache_config):
+    local_file = shlex.quote(fineweb_cache_config['local_file'])
+    bucket_object = shlex.quote(fineweb_cache_config['bucket_object'])
+    variant = shlex.quote(fineweb_cache_config['variant'])
+    return f"""
+export TPUNANNY_FINEWEB_LOCAL_FILE={local_file}
+export TPUNANNY_FINEWEB_BUCKET_OBJECT={bucket_object}
+export TPUNANNY_FINEWEB_VARIANT={variant}
+export TPUNANNY_FINEWEB_WAIT_SECONDS="${{TPUNANNY_FINEWEB_WAIT_SECONDS:-1800}}"
+
+_tpunanny_worker_id() {{
+  local instance_name
+  instance_name="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/name 2>/dev/null || true)"
+  if [[ -n "$instance_name" && "$instance_name" =~ -([0-9]+)$ ]]; then
+    echo "${{BASH_REMATCH[1]}}"
+    return 0
+  fi
+  echo "0"
+}}
+
+python3() {{
+  if [[ "$#" -ge 1 && "$(basename -- "$1")" == "download_fineweb.py" ]]; then
+    local worker_id
+    worker_id="$(_tpunanny_worker_id)"
+
+    if [[ -s "$TPUNANNY_FINEWEB_LOCAL_FILE" ]]; then
+      echo "[fineweb] using local cached $TPUNANNY_FINEWEB_VARIANT at $TPUNANNY_FINEWEB_LOCAL_FILE"
+      return 0
+    fi
+
+    if gcloud storage ls "$TPUNANNY_FINEWEB_BUCKET_OBJECT" >/dev/null 2>&1; then
+      echo "[fineweb] worker $worker_id pulling from bucket cache..."
+      gcloud storage cp "$TPUNANNY_FINEWEB_BUCKET_OBJECT" "$TPUNANNY_FINEWEB_LOCAL_FILE"
+      return $?
+    fi
+
+    if [[ "$worker_id" == "0" ]]; then
+      echo "[fineweb] worker 0 cache miss; downloading from Hugging Face..."
+      command python3 "$@"
+      local ec=$?
+      if [[ $ec -eq 0 && -s "$TPUNANNY_FINEWEB_LOCAL_FILE" ]]; then
+        if gcloud storage ls "$TPUNANNY_FINEWEB_BUCKET_OBJECT" >/dev/null 2>&1; then
+          echo "[fineweb] bucket cache already exists: $TPUNANNY_FINEWEB_BUCKET_OBJECT"
+        else
+          echo "[fineweb] worker 0 uploading dataset to $TPUNANNY_FINEWEB_BUCKET_OBJECT"
+          gcloud storage cp "$TPUNANNY_FINEWEB_LOCAL_FILE" "$TPUNANNY_FINEWEB_BUCKET_OBJECT" || true
+        fi
+      fi
+      return $ec
+    fi
+
+    echo "[fineweb] worker $worker_id waiting for worker 0 to publish bucket cache..."
+    local waited=0
+    while (( waited < TPUNANNY_FINEWEB_WAIT_SECONDS )); do
+      if gcloud storage ls "$TPUNANNY_FINEWEB_BUCKET_OBJECT" >/dev/null 2>&1; then
+        echo "[fineweb] worker $worker_id pulling published bucket cache..."
+        gcloud storage cp "$TPUNANNY_FINEWEB_BUCKET_OBJECT" "$TPUNANNY_FINEWEB_LOCAL_FILE"
+        return $?
+      fi
+      sleep 20
+      waited=$((waited + 20))
+    done
+
+    echo "[fineweb] worker $worker_id timed out waiting for bucket cache; falling back to direct download."
+    command python3 "$@"
+    return $?
+  fi
+  command python3 "$@"
+}}
+
+{ssh_script}
+"""
 
 
 def _ensure_cloud_nat(zone, project_id, network='default'):
@@ -307,11 +464,15 @@ def _babysit(
     healthcheck_command=None,
     completion_command=None,
     delete_on_completion=True,
+    fineweb_cache_config=None,
 ):
     """(Re)creates TPU and runs `ssh_script`."""
     qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
     ran_ssh_script = False
     follow_logs_thread = None
+    wrapped_ssh_script = ssh_script
+    if ssh_script is not None and fineweb_cache_config is not None:
+        wrapped_ssh_script = _wrap_ssh_script_with_fineweb_cache(ssh_script, fineweb_cache_config)
 
     print(f'[{tpu_id}] starting to babysit...')
     while not stop_event.is_set():
@@ -364,9 +525,14 @@ def _babysit(
 
             if stop_event.is_set(): break
 
+            if fineweb_cache_config is not None:
+                prefetch_cmd = _fineweb_prefetch_command(fineweb_cache_config)
+                prefetch_result = _run(tpu_id, zone, project_id, prefetch_cmd, log_prefix='fineweb_prefetch')
+                print(f'[{tpu_id}] fineweb prefetch finished with exit code {prefetch_result.returncode}.')
+
             # run ssh script
             print(f'[{tpu_id}] running ssh script...')
-            result = _run(tpu_id, zone, project_id, ssh_script)
+            result = _run(tpu_id, zone, project_id, wrapped_ssh_script)
             print(f'[{tpu_id}] ssh script finished with exit code {result.returncode}.')
             ran_ssh_script = True
 
@@ -403,6 +569,7 @@ def babysit(
     completion_command_by_idx=None,
     delete_on_completion=True,
     tpu_id_prefix='tn',
+    ensure_fineweb_cache=True,
 ):
     """Keeps multiple TPUs alive, optionally running per-index `ssh_script` and `startup_script` on boot."""
     global _stop_event, _threads
@@ -419,6 +586,7 @@ def babysit(
     follow_logs_command_by_idx = follow_logs_command_by_idx or {}
     healthcheck_command_by_idx = healthcheck_command_by_idx or {}
     completion_command_by_idx = completion_command_by_idx or {}
+    fineweb_cache_by_idx = {}
     zones_to_use = sorted({zones_by_idx.get(idx, zone) for idx in idxs})
 
     if ensure_nat:
@@ -430,6 +598,25 @@ def babysit(
             print('[nat] waiting 60s for Cloud NAT propagation before creating TPUs...')
             _stop_event.wait(60)
 
+    if ensure_fineweb_cache:
+        bucket_by_region = {}
+        for idx in idxs:
+            idx_zone = zones_by_idx.get(idx, zone)
+            idx_region = _region_from_zone(idx_zone)
+            idx_ssh_script = ssh_script_by_idx.get(idx, ssh_script)
+            try:
+                if idx_region not in bucket_by_region:
+                    bucket_by_region[idx_region] = _ensure_fineweb_bucket(idx_zone, project_id)
+                variant = _infer_fineweb_variant(idx_ssh_script)
+                fineweb_cache_by_idx[idx] = _build_fineweb_cache_config(bucket_by_region[idx_region], variant)
+                print(
+                    f'[fineweb] seed={idx} region={idx_region} variant={variant} '
+                    f'object={fineweb_cache_by_idx[idx]["bucket_object"]}'
+                )
+            except Exception as e:
+                print(f'[fineweb] setup failed for seed={idx} in {idx_region}: {e}')
+                print(f'[fineweb] continuing without fineweb cache for seed={idx}.')
+
     # create and start a thread for each TPU
     threads = []
     for idx in idxs:
@@ -438,6 +625,7 @@ def babysit(
         idx_follow_logs_command = follow_logs_command_by_idx.get(idx, follow_logs_command)
         idx_healthcheck_command = healthcheck_command_by_idx.get(idx, healthcheck_command)
         idx_completion_command = completion_command_by_idx.get(idx, completion_command)
+        idx_fineweb_cache_config = fineweb_cache_by_idx.get(idx)
         tpu_id = f'{tpu_id_prefix}-{tpu_type}-{idx}'
         thread = threading.Thread(
             target=_babysit,
@@ -453,6 +641,7 @@ def babysit(
                 idx_healthcheck_command,
                 idx_completion_command,
                 delete_on_completion,
+                idx_fineweb_cache_config,
             ),
             daemon=True,
         )
