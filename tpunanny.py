@@ -47,9 +47,8 @@ def _sanitize_bucket_name(value):
     return cleaned[:63]
 
 
-def _ensure_fineweb_bucket(zone):
+def _ensure_fineweb_bucket(zone, project_id):
     """Ensures a regional GCS bucket exists for FineWeb cache in the TPU region."""
-    project_id = 'loss-spikes'
     region = _region_from_zone(zone)
     bucket_base = f'tpunanny-fineweb-{project_id}-{region}'
     bucket_name = _sanitize_bucket_name(bucket_base)
@@ -607,11 +606,18 @@ def babysit(
             idx_ssh_script = ssh_script_by_idx.get(idx, ssh_script)
             try:
                 if idx_region not in bucket_by_region:
-                    bucket_by_region[idx_region] = _ensure_fineweb_bucket(idx_zone)
+                    bucket_by_region[idx_region] = _ensure_fineweb_bucket(
+                        idx_zone,
+                        project_id,
+                    )
                 variant = _infer_fineweb_variant(idx_ssh_script)
-                fineweb_cache_by_idx[idx] = _build_fineweb_cache_config(bucket_by_region[idx_region], variant)
+                fineweb_cache_by_idx[idx] = _build_fineweb_cache_config(
+                    bucket_by_region[idx_region],
+                    variant,
+                )
                 print(
                     f'[fineweb] seed={idx} region={idx_region} variant={variant} '
+                    f'project={project_id} '
                     f'object={fineweb_cache_by_idx[idx]["bucket_object"]}'
                 )
             except Exception as e:
