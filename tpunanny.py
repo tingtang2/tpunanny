@@ -246,6 +246,7 @@ def _create(tpu_id, tpu_type, zone, project_id, startup_script=None):
     parent = f'projects/{project_id}/locations/{zone}'
 
     node_metadata = {}
+    node_labels = {'env': 'dev'}
     if startup_script is not None:
         node_metadata['startup-script'] = startup_script
 
@@ -259,6 +260,7 @@ def _create(tpu_id, tpu_type, zone, project_id, startup_script=None):
                         accelerator_type=tpu_type,
                         runtime_version=get_runtime(tpu_type),
                         network_config=tpu_v2alpha1.NetworkConfig(enable_external_ips=False),
+                        labels=node_labels,
                         metadata=node_metadata,
                     ),
                 )
@@ -374,8 +376,8 @@ def _request_delete(tpu_id, zone, project_id):
         return False
 
 
-def _run(tpu_id, zone, project_id, ssh_script, log_prefix='ssh'):
-    """Runs `ssh_script` on all workers of a TPU VM via gcloud SSH."""
+def _run(tpu_id, zone, project_id, ssh_script, log_prefix='ssh', worker='all'):
+    """Runs `ssh_script` on TPU VM workers via gcloud SSH."""
     output_dir = os.path.join('logs', zone, tpu_id)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -384,7 +386,7 @@ def _run(tpu_id, zone, project_id, ssh_script, log_prefix='ssh'):
         f'--zone={zone}',
         '--tunnel-through-iap',
         f'--project={project_id}',
-        '--worker=all',
+        f'--worker={worker}',
         f'--command={ssh_script}',
     ]
     process = subprocess.Popen(
@@ -489,7 +491,14 @@ def _babysit(
         if create_status != 'exists': ran_ssh_script = False
         elif ran_ssh_script:
             if completion_command is not None:
-                completion_result = _run(tpu_id, zone, project_id, completion_command, log_prefix='completioncheck')
+                completion_result = _run(
+                    tpu_id,
+                    zone,
+                    project_id,
+                    completion_command,
+                    log_prefix='completioncheck',
+                    worker='0',
+                )
                 if completion_result.returncode == 0:
                     print(f'[{tpu_id}] completion check passed; training finished.')
                     if delete_on_completion:
@@ -503,7 +512,14 @@ def _babysit(
 
             # Script was launched before; ensure the remote trainer is still alive.
             if healthcheck_command is not None:
-                health_result = _run(tpu_id, zone, project_id, healthcheck_command, log_prefix='healthcheck')
+                health_result = _run(
+                    tpu_id,
+                    zone,
+                    project_id,
+                    healthcheck_command,
+                    log_prefix='healthcheck',
+                    worker='0',
+                )
                 if health_result.returncode != 0:
                     print(f'[{tpu_id}] healthcheck failed; will relaunch ssh script.')
                     ran_ssh_script = False
