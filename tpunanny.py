@@ -107,7 +107,7 @@ def _fineweb_prefetch_command(fineweb_cache_config):
         f'echo "[fineweb] pulling dataset from bucket: {bucket_object}"; '
         f'gcloud storage cp {bucket_object} {local_file}; '
         f'else '
-        f'echo "[fineweb] bucket object missing (will fall back to HF download): {bucket_object}"; '
+        f'echo "[fineweb] bucket object missing: {bucket_object}"; '
         f'fi'
     )
 
@@ -175,9 +175,9 @@ python3() {{
       waited=$((waited + 20))
     done
 
-    echo "[fineweb] worker $worker_id timed out waiting for bucket cache; falling back to direct download."
-    command python3 "$@"
-    return $?
+    echo "[fineweb] ERROR: worker $worker_id timed out waiting for bucket cache at $TPUNANNY_FINEWEB_BUCKET_OBJECT"
+    echo "[fineweb] ERROR: refusing HF fallback on non-worker-0; failing job."
+    return 1
   fi
   command python3 "$@"
 }}
