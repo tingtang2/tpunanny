@@ -78,9 +78,27 @@ def _ensure_fineweb_bucket(zone, project_id):
 
 def _infer_fineweb_variant(ssh_script):
     """Infers dataset flavor from run script/model config."""
-    script = (ssh_script or '').lower()
-    if 'fw_gpt2_100b' in script or '+model=gpt3xl' in script or 'gpt3xl' in script:
-        return 'fineweb100B'
+    run_name_prefix = None
+    for raw_line in (ssh_script or '').splitlines():
+        line = raw_line.strip()
+        if not line.startswith('export RUN_NAME_PREFIX='):
+            continue
+        _, _, value = line.partition('=')
+        try:
+            parsed = shlex.split(value)
+        except ValueError:
+            parsed = []
+        if parsed:
+            run_name_prefix = parsed[0].lower()
+        else:
+            run_name_prefix = value.strip().strip('\'"').lower()
+        break
+
+    if run_name_prefix is not None:
+        if 'gpt3xl' in run_name_prefix:
+            return 'fineweb100B'
+        return 'fineweb10B'
+
     return 'fineweb10B'
 
 
