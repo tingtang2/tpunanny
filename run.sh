@@ -23,8 +23,32 @@ WANDB_MODE="${WANDB_MODE:-online}"
 CONFIG_NAME="${CONFIG_NAME:-wortsman_default}"
 EVAL_FREQ="${EVAL_FREQ:-100}"
 CHECKPOINT_FREQ="${CHECKPOINT_FREQ:-10000}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-gs://demand-v4-checkpoint-storage/picodo_ckpts}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-}"
+if [[ -z "$CHECKPOINT_ROOT" ]] && [[ -n "${TPUNANNY_FINEWEB_BUCKET_OBJECT:-}" ]] && [[ "$TPUNANNY_FINEWEB_BUCKET_OBJECT" == gs://* ]]; then
+  FINEWEB_URI_STRIPPED="${TPUNANNY_FINEWEB_BUCKET_OBJECT#gs://}"
+  FINEWEB_BUCKET="${FINEWEB_URI_STRIPPED%%/*}"
+  if [[ -n "$FINEWEB_BUCKET" ]]; then
+    CHECKPOINT_ROOT="gs://${FINEWEB_BUCKET}/picodo_ckpts"
+  fi
+fi
 USE_CHINCHILLA="${USE_CHINCHILLA:-false}"
+
+if [[ "$CHECKPOINT_ROOT" != gs://* ]]; then
+  echo "ERROR: CHECKPOINT_ROOT must be a gs:// URI. Got: $CHECKPOINT_ROOT" >&2
+  exit 1
+fi
+
+CHECKPOINT_ROOT_STRIPPED="${CHECKPOINT_ROOT#gs://}"
+CHECKPOINT_BUCKET="${CHECKPOINT_ROOT_STRIPPED%%/*}"
+if [[ -z "$CHECKPOINT_BUCKET" ]]; then
+  echo "ERROR: unable to parse bucket from CHECKPOINT_ROOT=$CHECKPOINT_ROOT" >&2
+  exit 1
+fi
+if [[ "$CHECKPOINT_ROOT_STRIPPED" == "$CHECKPOINT_BUCKET" ]]; then
+  CHECKPOINT_PREFIX=""
+else
+  CHECKPOINT_PREFIX="${CHECKPOINT_ROOT_STRIPPED#${CHECKPOINT_BUCKET}/}"
+fi
 
 RUN_NAME="${RUN_NAME_PREFIX}_seed${SEED}_lr${LR_TAG}_bs${BATCH_SIZE}"
 CHECKPOINT_BUCKET_PATH="${CHECKPOINT_ROOT}/${RUN_NAME}"
@@ -96,22 +120,22 @@ ensure_setup() {
     wandb login "$WANDB_TOKEN"
   fi
 
-  BUCKET="demand-v4-checkpoint-storage"
-  PREFIX="picodo_ckpts"
   PROJECT_ID="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/project/project-id)"
   SA_EMAIL="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email)"
   INSTANCE_NAME="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/name)"
   WORKER_ID="${INSTANCE_NAME##*-}"
+  PROBE_OBJECT="${CHECKPOINT_PREFIX:+${CHECKPOINT_PREFIX}/}iam_probe.txt"
+  PROBE_URI="gs://${CHECKPOINT_BUCKET}/${PROBE_OBJECT}"
 
   if [[ "$WORKER_ID" == "0" ]]; then
-    gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+    gcloud storage buckets add-iam-policy-binding "gs://${CHECKPOINT_BUCKET}" \
       --member="serviceAccount:${SA_EMAIL}" \
       --role="roles/storage.objectAdmin" \
       --project="${PROJECT_ID}" || true
 
-    echo "ok $(date -u +%FT%TZ)" | gcloud storage cp - "gs://${BUCKET}/${PREFIX}/iam_probe.txt"
-    gcloud storage cat "gs://${BUCKET}/${PREFIX}/iam_probe.txt" >/dev/null
-    gcloud storage rm "gs://${BUCKET}/${PREFIX}/iam_probe.txt"
+    echo "ok $(date -u +%FT%TZ)" | gcloud storage cp - "${PROBE_URI}"
+    gcloud storage cat "${PROBE_URI}" >/dev/null
+    gcloud storage rm "${PROBE_URI}"
     echo "Bucket R/W verification passed."
   fi
 

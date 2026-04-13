@@ -67,7 +67,7 @@ seed_zone_map = _parse_seed_zone_map(os.environ.get('SEED_ZONE_MAP', ''))
 # train config setup
 lr_tag = os.environ.get('LR_TAG', 'default')
 lr_arg = os.environ.get('LR_ARG', '')
-checkpoint_root = os.environ.get('CHECKPOINT_ROOT', 'gs://demand-v4-checkpoint-storage/picodo_ckpts')
+checkpoint_root = os.environ.get('CHECKPOINT_ROOT')
 batch_size = os.environ.get('BATCH_SIZE', '64')
 num_tp_devices = os.environ.get('NUM_TP_DEVICES', '1')
 wandb_mode = os.environ.get('WANDB_MODE', 'online')
@@ -83,15 +83,25 @@ ssh_script_by_idx = {}
 follow_logs_command_by_idx = {}
 healthcheck_command_by_idx = {}
 completion_command_by_idx = {}
+checkpoint_root_by_region = {}
 for offset, seed in enumerate(seed_idxs):
     seed_zone = seed_zone_map.get(seed, zones[offset % len(zones)])
     zones_by_idx[seed] = seed_zone
+    seed_region = seed_zone.rsplit('-', 1)[0]
+
+    if checkpoint_root:
+        seed_checkpoint_root = checkpoint_root
+    else:
+        if seed_region not in checkpoint_root_by_region:
+            fineweb_bucket = tn.get_fineweb_bucket_name(seed_zone, project_id)
+            checkpoint_root_by_region[seed_region] = f'gs://{fineweb_bucket}/picodo_ckpts'
+        seed_checkpoint_root = checkpoint_root_by_region[seed_region]
 
     env_exports = {
         'SEED': str(seed),
         'LR_TAG': lr_tag,
         'RUN_NAME_PREFIX': run_name_prefix,
-        'CHECKPOINT_ROOT': checkpoint_root,
+        'CHECKPOINT_ROOT': seed_checkpoint_root,
         'BATCH_SIZE': batch_size,
         'NUM_TP_DEVICES': num_tp_devices,
         'WANDB_MODE': wandb_mode,

@@ -47,11 +47,17 @@ def _sanitize_bucket_name(value):
     return cleaned[:63]
 
 
+def get_fineweb_bucket_name(zone, project_id):
+    """Builds the regional FineWeb cache bucket name for a TPU zone."""
+    region = _region_from_zone(zone)
+    bucket_base = f'tpunanny-fineweb-{project_id}-{region}'
+    return _sanitize_bucket_name(bucket_base)
+
+
 def _ensure_fineweb_bucket(zone, project_id):
     """Ensures a regional GCS bucket exists for FineWeb cache in the TPU region."""
     region = _region_from_zone(zone)
-    bucket_base = f'tpunanny-fineweb-{project_id}-{region}'
-    bucket_name = _sanitize_bucket_name(bucket_base)
+    bucket_name = get_fineweb_bucket_name(zone, project_id)
 
     bucket_describe = _run_gcloud([
         'gcloud', 'storage', 'buckets', 'describe', f'gs://{bucket_name}',
