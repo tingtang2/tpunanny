@@ -75,6 +75,7 @@ config_name = os.environ.get('CONFIG_NAME', 'wortsman_default')
 checkpoint_freq = os.environ.get('CHECKPOINT_FREQ', '10000')
 eval_freq = os.environ.get('EVAL_FREQ', '100')
 use_chinchilla = os.environ.get('USE_CHINCHILLA', 'false')
+use_z_loss = os.environ.get('USE_Z_LOSS', '')
 follow_logs = os.environ.get('FOLLOW_LOGS', 'false').strip().lower() == 'true'
 follow_log_lines = os.environ.get('FOLLOW_LOG_LINES', '200')
 
@@ -109,6 +110,7 @@ for offset, seed in enumerate(seed_idxs):
         'CHECKPOINT_FREQ': checkpoint_freq,
         'EVAL_FREQ': eval_freq,
         'USE_CHINCHILLA': use_chinchilla,
+        'USE_Z_LOSS': use_z_loss,
         'WANDB_TOKEN': wandb_token,
     }
     if hf_token:

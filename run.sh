@@ -32,6 +32,7 @@ if [[ -z "$CHECKPOINT_ROOT" ]] && [[ -n "${TPUNANNY_FINEWEB_BUCKET_OBJECT:-}" ]]
   fi
 fi
 USE_CHINCHILLA="${USE_CHINCHILLA:-false}"
+USE_Z_LOSS="${USE_Z_LOSS:-}"
 
 if [[ "$CHECKPOINT_ROOT" != gs://* ]]; then
   echo "ERROR: CHECKPOINT_ROOT must be a gs:// URI. Got: $CHECKPOINT_ROOT" >&2
@@ -210,6 +211,17 @@ fi
 
 if [[ "${USE_CHINCHILLA,,}" == "true" ]]; then
   TRAIN_ARGS+=("num_tokens_train=null")
+fi
+
+if [[ -n "$USE_Z_LOSS" ]]; then
+  if [[ "${USE_Z_LOSS,,}" == "true" ]]; then
+    TRAIN_ARGS+=("opt.use_z_loss=True")
+  elif [[ "${USE_Z_LOSS,,}" == "false" ]]; then
+    TRAIN_ARGS+=("opt.use_z_loss=False")
+  else
+    echo "ERROR: USE_Z_LOSS must be one of: true, false, or unset. Got: $USE_Z_LOSS" >&2
+    exit 1
+  fi
 fi
 
 TRAIN_ARGS+=("--config-name=${CONFIG_NAME}")
