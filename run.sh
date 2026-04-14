@@ -386,6 +386,7 @@ if [[ "$QUEUE_MODE" == "true" ]]; then
   fi
 
   rm -f "$SEED_QUEUE_FAILED_MARKER" "$SEED_QUEUE_STATUS_FILE"
+  : > "$SEED_QUEUE_LOG_FILE"
   tmux_cmd="bash -lc 'cd \"$REPO_DIR\"; export TPUNANNY_SEED_QUEUE_WORKER=true; bash \"$TPUNANNY_RUNNER_SCRIPT_PATH\" >> \"$SEED_QUEUE_LOG_FILE\" 2>&1'"
   tmux new-session -d -s "$SEED_QUEUE_SESSION_NAME" "$tmux_cmd"
 

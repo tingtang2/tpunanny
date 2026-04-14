@@ -56,10 +56,14 @@ remote_runner_script_path = '/home/tingchen/loss-spikes-project/tpunanny_run.sh'
 
 
 def _build_remote_runner_script(script_text):
+    remote_runner_dir = os.path.dirname(remote_runner_script_path)
+    remote_runner_tmp_path = f'{remote_runner_script_path}.tmp'
     return (
-        f"cat > {shlex.quote(remote_runner_script_path)} <<'__TPUNANNY_RUN_SH__'\n"
+        f"mkdir -p {shlex.quote(remote_runner_dir)}\n"
+        f"cat > {shlex.quote(remote_runner_tmp_path)} <<'__TPUNANNY_RUN_SH__'\n"
         f"{script_text}\n"
         "__TPUNANNY_RUN_SH__\n"
+        f"mv {shlex.quote(remote_runner_tmp_path)} {shlex.quote(remote_runner_script_path)}\n"
         f"chmod +x {shlex.quote(remote_runner_script_path)}\n"
         f"export TPUNANNY_RUNNER_SCRIPT_PATH={shlex.quote(remote_runner_script_path)}"
     )
