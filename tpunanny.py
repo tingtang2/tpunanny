@@ -206,6 +206,9 @@ python3() {{
   command python3 "$@"
 }}
 
+export -f _tpunanny_worker_id
+export -f python3
+
 {ssh_script}
 """
 
