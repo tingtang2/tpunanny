@@ -156,16 +156,20 @@ ensure_setup() {
     echo "Bucket R/W verification passed."
   fi
 
-  if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
-    python3 download_fineweb.py \
-      --dataset=fineweb \
-      --full_fineweb100b=True \
-      --num_chunks=283 \
-      --stream_write=True \
-      --shard_dir=/dev/shm/fineweb_shards \
-      --hf_cache_dir=/dev/shm/hf_cache
+  if [[ -n "${TPUNANNY_FINEWEB_LOCAL_FILE:-}" ]] && [[ -s "${TPUNANNY_FINEWEB_LOCAL_FILE}" ]]; then
+    echo "[fineweb] local dataset already present: ${TPUNANNY_FINEWEB_LOCAL_FILE}"
   else
-    python3 download_fineweb.py
+    if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
+      python3 download_fineweb.py \
+        --dataset=fineweb \
+        --full_fineweb100b=True \
+        --num_chunks=283 \
+        --stream_write=True \
+        --shard_dir=/dev/shm/fineweb_shards \
+        --hf_cache_dir=/dev/shm/hf_cache
+    else
+      python3 download_fineweb.py
+    fi
   fi
 
   touch "$SETUP_MARKER"
