@@ -34,6 +34,9 @@ if [[ -z "$CHECKPOINT_ROOT" ]] && [[ -n "${TPUNANNY_FINEWEB_BUCKET_OBJECT:-}" ]]
 fi
 USE_CHINCHILLA="${USE_CHINCHILLA:-false}"
 USE_Z_LOSS="${USE_Z_LOSS:-}"
+USE_B2_COSINE_ANNEAL="${USE_B2_COSINE_ANNEAL:-}"
+B2_ARG="${B2_ARG:-}"
+FINAL_B2_ARG="${FINAL_B2_ARG:-}"
 
 if [[ "$CHECKPOINT_ROOT" != gs://* ]]; then
   echo "ERROR: CHECKPOINT_ROOT must be a gs:// URI. Got: $CHECKPOINT_ROOT" >&2
@@ -65,6 +68,7 @@ TPUNANNY_SEED_QUEUE_WORKER="${TPUNANNY_SEED_QUEUE_WORKER:-false}"
 
 export SEED LR_TAG LR_ARG RUN_NAME_PREFIX NUM_TP_DEVICES BATCH_SIZE WANDB_MODE CONFIG_NAME
 export EVAL_FREQ CHECKPOINT_FREQ CHECKPOINT_ROOT USE_CHINCHILLA USE_Z_LOSS
+export USE_B2_COSINE_ANNEAL B2_ARG FINAL_B2_ARG
 export SEQUENTIAL_SEEDS_ON_SINGLE_TPU SEED_QUEUE SEED_QUEUE_SESSION_NAME
 export SEED_QUEUE_DONE_MARKER SEED_QUEUE_FAILED_MARKER SEED_QUEUE_STATUS_FILE SEED_QUEUE_LOG_FILE
 
@@ -223,6 +227,25 @@ build_train_args_for_seed() {
       echo "ERROR: USE_Z_LOSS must be one of: true, false, or unset. Got: $USE_Z_LOSS" >&2
       exit 1
     fi
+  fi
+
+  if [[ -n "$USE_B2_COSINE_ANNEAL" ]]; then
+    if [[ "${USE_B2_COSINE_ANNEAL,,}" == "true" ]]; then
+      TRAIN_ARGS+=("opt.b2_cosine_anneal.enabled=True")
+    elif [[ "${USE_B2_COSINE_ANNEAL,,}" == "false" ]]; then
+      TRAIN_ARGS+=("opt.b2_cosine_anneal.enabled=False")
+    else
+      echo "ERROR: USE_B2_COSINE_ANNEAL must be one of: true, false, or unset. Got: $USE_B2_COSINE_ANNEAL" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -n "$B2_ARG" ]]; then
+    TRAIN_ARGS+=("opt.b2=${B2_ARG}")
+  fi
+
+  if [[ -n "$FINAL_B2_ARG" ]]; then
+    TRAIN_ARGS+=("opt.b2_cosine_anneal.final_b2=${FINAL_B2_ARG}")
   fi
 
   TRAIN_ARGS+=("--config-name=${CONFIG_NAME}")

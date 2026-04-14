@@ -94,6 +94,9 @@ checkpoint_freq = os.environ.get('CHECKPOINT_FREQ', '10000')
 eval_freq = os.environ.get('EVAL_FREQ', '100')
 use_chinchilla = os.environ.get('USE_CHINCHILLA', 'false')
 use_z_loss = os.environ.get('USE_Z_LOSS', '')
+use_b2_cosine_anneal = os.environ.get('USE_B2_COSINE_ANNEAL', '')
+b2_arg = os.environ.get('B2_ARG', '')
+final_b2_arg = os.environ.get('FINAL_B2_ARG', '')
 follow_logs = os.environ.get('FOLLOW_LOGS', 'false').strip().lower() == 'true'
 follow_log_lines = os.environ.get('FOLLOW_LOG_LINES', '200')
 sequential_seeds_on_single_tpu = (
@@ -151,6 +154,9 @@ if sequential_seeds_on_single_tpu:
         'EVAL_FREQ': eval_freq,
         'USE_CHINCHILLA': use_chinchilla,
         'USE_Z_LOSS': use_z_loss,
+        'USE_B2_COSINE_ANNEAL': use_b2_cosine_anneal,
+        'B2_ARG': b2_arg,
+        'FINAL_B2_ARG': final_b2_arg,
         'WANDB_TOKEN': wandb_token,
         'SEQUENTIAL_SEEDS_ON_SINGLE_TPU': 'true',
         'SEED_QUEUE': seed_queue_csv,
@@ -211,6 +217,9 @@ else:
             'EVAL_FREQ': eval_freq,
             'USE_CHINCHILLA': use_chinchilla,
             'USE_Z_LOSS': use_z_loss,
+            'USE_B2_COSINE_ANNEAL': use_b2_cosine_anneal,
+            'B2_ARG': b2_arg,
+            'FINAL_B2_ARG': final_b2_arg,
             'WANDB_TOKEN': wandb_token,
         }
         if hf_token:
