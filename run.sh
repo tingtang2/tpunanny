@@ -5,6 +5,7 @@ USER_NAME="tingchen"
 USER_HOME="/home/tingchen"
 PROJECT_DIR="$USER_HOME/loss-spikes-project"
 REPO_DIR="$PROJECT_DIR/picodo"
+TPUNANNY_RUNNER_SCRIPT_PATH="${TPUNANNY_RUNNER_SCRIPT_PATH:-$PROJECT_DIR/tpunanny_run.sh}"
 VENV_DIR="$PROJECT_DIR/env-loss-spikes"
 SETUP_MARKER="$PROJECT_DIR/.tpunanny_setup_done"
 
@@ -385,7 +386,7 @@ if [[ "$QUEUE_MODE" == "true" ]]; then
   fi
 
   rm -f "$SEED_QUEUE_FAILED_MARKER" "$SEED_QUEUE_STATUS_FILE"
-  tmux_cmd="bash -lc 'cd \"$REPO_DIR\"; export TPUNANNY_SEED_QUEUE_WORKER=true; bash \"$REPO_DIR/run.sh\" >> \"$SEED_QUEUE_LOG_FILE\" 2>&1'"
+  tmux_cmd="bash -lc 'cd \"$REPO_DIR\"; export TPUNANNY_SEED_QUEUE_WORKER=true; bash \"$TPUNANNY_RUNNER_SCRIPT_PATH\" >> \"$SEED_QUEUE_LOG_FILE\" 2>&1'"
   tmux new-session -d -s "$SEED_QUEUE_SESSION_NAME" "$tmux_cmd"
 
   echo "Started sequential queue tmux session '$SEED_QUEUE_SESSION_NAME'."

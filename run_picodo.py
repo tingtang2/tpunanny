@@ -52,6 +52,20 @@ if len(tpu_id_prefix) > 24:
     # Keep room for "-{tpu_type}-{seed}" under TPU name length limits.
     tpu_id_prefix = tpu_id_prefix[:24].rstrip('-')
 run_script = (base_dir / 'run.sh').read_text()
+remote_runner_script_path = '/home/tingchen/loss-spikes-project/tpunanny_run.sh'
+
+
+def _build_remote_runner_script(script_text):
+    return (
+        f"cat > {shlex.quote(remote_runner_script_path)} <<'__TPUNANNY_RUN_SH__'\n"
+        f"{script_text}\n"
+        "__TPUNANNY_RUN_SH__\n"
+        f"chmod +x {shlex.quote(remote_runner_script_path)}\n"
+        f"export TPUNANNY_RUNNER_SCRIPT_PATH={shlex.quote(remote_runner_script_path)}"
+    )
+
+
+remote_runner_bootstrap = _build_remote_runner_script(run_script)
 
 num_seeds = int(os.environ.get('NUM_SEEDS', '5'))
 seed_start = int(os.environ.get('SEED_START', '0'))
@@ -149,7 +163,11 @@ if sequential_seeds_on_single_tpu:
         f"export {key}={shlex.quote(value)}"
         for key, value in env_exports.items()
     )
-    ssh_script_by_idx[controller_seed] = f"{exports_text}\n{run_script}"
+    ssh_script_by_idx[controller_seed] = (
+        f"{exports_text}\n"
+        f"{remote_runner_bootstrap}\n"
+        f"bash {shlex.quote(remote_runner_script_path)}"
+    )
     healthcheck_command_by_idx[controller_seed] = f"tmux has-session -t {shlex.quote(queue_session_name)}"
     completion_command_by_idx[controller_seed] = f"test -f {shlex.quote(queue_done_marker)}"
     if follow_logs:
@@ -200,7 +218,11 @@ else:
             f"export {key}={shlex.quote(value)}"
             for key, value in env_exports.items()
         )
-        ssh_script_by_idx[seed] = f"{exports_text}\n{run_script}"
+        ssh_script_by_idx[seed] = (
+            f"{exports_text}\n"
+            f"{remote_runner_bootstrap}\n"
+            f"bash {shlex.quote(remote_runner_script_path)}"
+        )
         healthcheck_command_by_idx[seed] = f"tmux has-session -t {shlex.quote(f'picodo_train_seed{seed}')}"
         done_marker = (
             f"/home/tingchen/loss-spikes-project/picodo/train_status/"
