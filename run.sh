@@ -51,15 +51,30 @@ else
   CHECKPOINT_PREFIX="${CHECKPOINT_ROOT_STRIPPED#${CHECKPOINT_BUCKET}/}"
 fi
 
-RUN_NAME="${RUN_NAME_PREFIX}_seed${SEED}_lr${LR_TAG}_bs${BATCH_SIZE}"
-CHECKPOINT_BUCKET_PATH="${CHECKPOINT_ROOT}/${RUN_NAME}"
-SESSION_NAME="picodo_train_seed${SEED}"
 LOG_DIR="$REPO_DIR/train_logs"
-LOG_FILE="$LOG_DIR/${RUN_NAME}.log"
 STATUS_DIR="$REPO_DIR/train_status"
-DONE_MARKER="$STATUS_DIR/${RUN_NAME}.done"
-FAILED_MARKER="$STATUS_DIR/${RUN_NAME}.failed"
-STATUS_FILE="$STATUS_DIR/${RUN_NAME}.exitcode"
+SEQUENTIAL_SEEDS_ON_SINGLE_TPU="${SEQUENTIAL_SEEDS_ON_SINGLE_TPU:-false}"
+SEED_QUEUE="${SEED_QUEUE:-}"
+SEED_QUEUE_SESSION_NAME="${SEED_QUEUE_SESSION_NAME:-}"
+SEED_QUEUE_DONE_MARKER="${SEED_QUEUE_DONE_MARKER:-}"
+SEED_QUEUE_FAILED_MARKER="${SEED_QUEUE_FAILED_MARKER:-}"
+SEED_QUEUE_STATUS_FILE="${SEED_QUEUE_STATUS_FILE:-}"
+SEED_QUEUE_LOG_FILE="${SEED_QUEUE_LOG_FILE:-}"
+TPUNANNY_SEED_QUEUE_WORKER="${TPUNANNY_SEED_QUEUE_WORKER:-false}"
+
+export SEED LR_TAG LR_ARG RUN_NAME_PREFIX NUM_TP_DEVICES BATCH_SIZE WANDB_MODE CONFIG_NAME
+export EVAL_FREQ CHECKPOINT_FREQ CHECKPOINT_ROOT USE_CHINCHILLA USE_Z_LOSS
+export SEQUENTIAL_SEEDS_ON_SINGLE_TPU SEED_QUEUE SEED_QUEUE_SESSION_NAME
+export SEED_QUEUE_DONE_MARKER SEED_QUEUE_FAILED_MARKER SEED_QUEUE_STATUS_FILE SEED_QUEUE_LOG_FILE
+
+QUEUE_MODE="false"
+if [[ "${SEQUENTIAL_SEEDS_ON_SINGLE_TPU,,}" == "true" || -n "$SEED_QUEUE" ]]; then
+  QUEUE_MODE="true"
+fi
+if [[ "$QUEUE_MODE" == "true" && -z "$SEED_QUEUE" ]]; then
+  SEED_QUEUE="$SEED"
+  export SEED_QUEUE
+fi
 
 wait_for_apt_lock() {
   while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
@@ -155,6 +170,190 @@ ensure_setup() {
   touch "$SETUP_MARKER"
 }
 
+build_train_args_for_seed() {
+  local seed="$1"
+  local run_name="$2"
+  local checkpoint_bucket_path="$3"
+
+  TRAIN_ARGS=(
+    "run_name=${run_name}"
+    "checkpoint.turn_on=true"
+    "+checkpoint.gcp_bucket=${checkpoint_bucket_path}"
+    "checkpoint.start_step=null"
+    "checkpoint.checkpoint_steps=null"
+    "num_tp_devices=${NUM_TP_DEVICES}"
+    "checkpoint.checkpoint_every_steps=${CHECKPOINT_FREQ}"
+    "eval_every_steps=${EVAL_FREQ}"
+    "opt.batch_size=${BATCH_SIZE}"
+    "seed=${seed}"
+    "wandb_mode=${WANDB_MODE}"
+  )
+
+  if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
+    TRAIN_ARGS+=("+model=gpt3xl")
+  else
+    TRAIN_ARGS+=("+model=gpt2m")
+  fi
+
+  if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
+    TRAIN_ARGS+=("+dataset=fw_gpt2_100B")
+  else
+    TRAIN_ARGS+=("+dataset=fw_gpt2")
+  fi
+
+  if [[ -n "$LR_ARG" ]]; then
+    TRAIN_ARGS+=("$LR_ARG")
+  fi
+
+  if [[ "${USE_CHINCHILLA,,}" == "true" ]]; then
+    TRAIN_ARGS+=("num_tokens_train=null")
+  fi
+
+  if [[ -n "$USE_Z_LOSS" ]]; then
+    if [[ "${USE_Z_LOSS,,}" == "true" ]]; then
+      TRAIN_ARGS+=("opt.use_z_loss=True")
+    elif [[ "${USE_Z_LOSS,,}" == "false" ]]; then
+      TRAIN_ARGS+=("opt.use_z_loss=False")
+    else
+      echo "ERROR: USE_Z_LOSS must be one of: true, false, or unset. Got: $USE_Z_LOSS" >&2
+      exit 1
+    fi
+  fi
+
+  TRAIN_ARGS+=("--config-name=${CONFIG_NAME}")
+}
+
+run_single_seed_sync() {
+  local seed="$1"
+  local run_name="${RUN_NAME_PREFIX}_seed${seed}_lr${LR_TAG}_bs${BATCH_SIZE}"
+  local checkpoint_bucket_path="${CHECKPOINT_ROOT}/${run_name}"
+  local log_file="$LOG_DIR/${run_name}.log"
+  local done_marker="$STATUS_DIR/${run_name}.done"
+  local failed_marker="$STATUS_DIR/${run_name}.failed"
+  local status_file="$STATUS_DIR/${run_name}.exitcode"
+
+  if [[ -f "$done_marker" ]]; then
+    echo "Completion marker exists for $run_name; skipping launch."
+    return 0
+  fi
+
+  rm -f "$failed_marker" "$status_file"
+  build_train_args_for_seed "$seed" "$run_name" "$checkpoint_bucket_path"
+
+  echo "Starting seed ${seed} with run name $run_name"
+  set +e
+  python3 -u main.py "${TRAIN_ARGS[@]}" >> "$log_file" 2>&1
+  local exit_code=$?
+  set -e
+  echo "$exit_code" > "$status_file"
+
+  if [[ $exit_code -eq 0 ]] && grep -q "Saved final checkpoint at step" "$log_file"; then
+    touch "$done_marker"
+    rm -f "$failed_marker"
+    echo "Seed ${seed} completed successfully."
+    return 0
+  fi
+
+  touch "$failed_marker"
+  echo "Seed ${seed} failed with exit code $exit_code."
+  return "$exit_code"
+}
+
+launch_single_seed_tmux() {
+  local seed="$1"
+  local run_name="${RUN_NAME_PREFIX}_seed${seed}_lr${LR_TAG}_bs${BATCH_SIZE}"
+  local checkpoint_bucket_path="${CHECKPOINT_ROOT}/${run_name}"
+  local session_name="picodo_train_seed${seed}"
+  local log_file="$LOG_DIR/${run_name}.log"
+  local done_marker="$STATUS_DIR/${run_name}.done"
+  local failed_marker="$STATUS_DIR/${run_name}.failed"
+  local status_file="$STATUS_DIR/${run_name}.exitcode"
+
+  if [[ -f "$done_marker" ]]; then
+    echo "Completion marker exists for $run_name; skipping launch."
+    echo "Run already reached final checkpoint."
+    return 0
+  fi
+
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    echo "tmux session '$session_name' is already running; skipping launch."
+    return 0
+  fi
+
+  rm -f "$failed_marker" "$status_file"
+  build_train_args_for_seed "$seed" "$run_name" "$checkpoint_bucket_path"
+  printf -v escaped_train_args '%q ' "${TRAIN_ARGS[@]}"
+  tmux_cmd="bash -lc 'cd \"$REPO_DIR\"; python3 -u main.py ${escaped_train_args} >> \"$log_file\" 2>&1; exit_code=\$?; echo \$exit_code > \"$status_file\"; if [[ \$exit_code -eq 0 ]] && grep -q \"Saved final checkpoint at step\" \"$log_file\"; then touch \"$done_marker\"; rm -f \"$failed_marker\"; else touch \"$failed_marker\"; fi; exit \$exit_code'"
+
+  tmux new-session -d -s "$session_name" "$tmux_cmd"
+  echo "Started tmux session '$session_name'."
+  echo "Run name: $run_name"
+  echo "Checkpoint path: $checkpoint_bucket_path"
+  echo "Logs: $log_file"
+  echo "Completion marker: $done_marker"
+}
+
+parse_seed_queue() {
+  local raw_queue="$1"
+  SEED_QUEUE_LIST=()
+  IFS=',' read -r -a raw_entries <<< "$raw_queue"
+  for raw_seed in "${raw_entries[@]}"; do
+    local seed="${raw_seed//[[:space:]]/}"
+    if [[ -z "$seed" ]]; then
+      continue
+    fi
+    if [[ ! "$seed" =~ ^[0-9]+$ ]]; then
+      echo "ERROR: SEED_QUEUE entries must be non-negative integers. Got: $seed" >&2
+      exit 1
+    fi
+    SEED_QUEUE_LIST+=("$seed")
+  done
+
+  if [[ "${#SEED_QUEUE_LIST[@]}" -eq 0 ]]; then
+    echo "ERROR: SEED_QUEUE resolved to an empty list." >&2
+    exit 1
+  fi
+}
+
+prepare_seed_queue_metadata() {
+  local first_seed="${SEED_QUEUE_LIST[0]}"
+  local last_idx=$(( ${#SEED_QUEUE_LIST[@]} - 1 ))
+  local last_seed="${SEED_QUEUE_LIST[$last_idx]}"
+  local seed_queue_slug
+  seed_queue_slug="$(IFS=-; echo "${SEED_QUEUE_LIST[*]}")"
+  local queue_run_name="${RUN_NAME_PREFIX}_seeds${seed_queue_slug}_lr${LR_TAG}_bs${BATCH_SIZE}"
+
+  SEED_QUEUE_SESSION_NAME="${SEED_QUEUE_SESSION_NAME:-picodo_train_queue_seed${first_seed}_to${last_seed}}"
+  SEED_QUEUE_DONE_MARKER="${SEED_QUEUE_DONE_MARKER:-$STATUS_DIR/${queue_run_name}.done}"
+  SEED_QUEUE_FAILED_MARKER="${SEED_QUEUE_FAILED_MARKER:-$STATUS_DIR/${queue_run_name}.failed}"
+  SEED_QUEUE_STATUS_FILE="${SEED_QUEUE_STATUS_FILE:-$STATUS_DIR/${queue_run_name}.exitcode}"
+  SEED_QUEUE_LOG_FILE="${SEED_QUEUE_LOG_FILE:-$LOG_DIR/${queue_run_name}.log}"
+
+  export SEED_QUEUE_SESSION_NAME SEED_QUEUE_DONE_MARKER
+  export SEED_QUEUE_FAILED_MARKER SEED_QUEUE_STATUS_FILE SEED_QUEUE_LOG_FILE
+}
+
+run_sequential_seed_queue_worker() {
+  local seed
+  rm -f "$SEED_QUEUE_DONE_MARKER" "$SEED_QUEUE_FAILED_MARKER" "$SEED_QUEUE_STATUS_FILE"
+  for seed in "${SEED_QUEUE_LIST[@]}"; do
+    if run_single_seed_sync "$seed"; then
+      continue
+    else
+      local exit_code=$?
+      echo "$exit_code" > "$SEED_QUEUE_STATUS_FILE"
+      touch "$SEED_QUEUE_FAILED_MARKER"
+      echo "Sequential seed queue failed on seed $seed."
+      return "$exit_code"
+    fi
+  done
+
+  echo "0" > "$SEED_QUEUE_STATUS_FILE"
+  touch "$SEED_QUEUE_DONE_MARKER"
+  rm -f "$SEED_QUEUE_FAILED_MARKER"
+  echo "Sequential seed queue completed."
+}
+
 ensure_setup
 
 source "$USER_HOME/.local/bin/env"
@@ -165,73 +364,35 @@ git pull --ff-only || true
 mkdir -p "$LOG_DIR"
 mkdir -p "$STATUS_DIR"
 
-if [[ -f "$DONE_MARKER" ]]; then
-  echo "Completion marker exists for $RUN_NAME; skipping launch."
-  echo "Run already reached final checkpoint."
-  exit 0
-fi
+if [[ "$QUEUE_MODE" == "true" ]]; then
+  parse_seed_queue "$SEED_QUEUE"
+  prepare_seed_queue_metadata
 
-if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-  echo "tmux session '$SESSION_NAME' is already running; skipping launch."
-  exit 0
-fi
-
-rm -f "$FAILED_MARKER" "$STATUS_FILE"
-
-TRAIN_ARGS=(
-  "run_name=${RUN_NAME}"
-  "checkpoint.turn_on=true"
-  "+checkpoint.gcp_bucket=${CHECKPOINT_BUCKET_PATH}"
-  "checkpoint.start_step=null"
-  "checkpoint.checkpoint_steps=null"
-  "num_tp_devices=${NUM_TP_DEVICES}"
-  "checkpoint.checkpoint_every_steps=${CHECKPOINT_FREQ}"
-  "eval_every_steps=${EVAL_FREQ}"
-  "opt.batch_size=${BATCH_SIZE}"
-  "seed=${SEED}"
-  "wandb_mode=${WANDB_MODE}"
-)
-
-if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
-  TRAIN_ARGS+=("+model=gpt3xl")
-else
-  TRAIN_ARGS+=("+model=gpt2m")
-fi
-
-
-if [[ "${RUN_NAME_PREFIX,,}" == *"gpt3xl"* ]]; then
-  TRAIN_ARGS+=("+dataset=fw_gpt2_100B")
-else
-  TRAIN_ARGS+=("+dataset=fw_gpt2")
-fi
-
-if [[ -n "$LR_ARG" ]]; then
-  TRAIN_ARGS+=("$LR_ARG")
-fi
-
-if [[ "${USE_CHINCHILLA,,}" == "true" ]]; then
-  TRAIN_ARGS+=("num_tokens_train=null")
-fi
-
-if [[ -n "$USE_Z_LOSS" ]]; then
-  if [[ "${USE_Z_LOSS,,}" == "true" ]]; then
-    TRAIN_ARGS+=("opt.use_z_loss=True")
-  elif [[ "${USE_Z_LOSS,,}" == "false" ]]; then
-    TRAIN_ARGS+=("opt.use_z_loss=False")
-  else
-    echo "ERROR: USE_Z_LOSS must be one of: true, false, or unset. Got: $USE_Z_LOSS" >&2
-    exit 1
+  if [[ "${TPUNANNY_SEED_QUEUE_WORKER,,}" == "true" ]]; then
+    run_sequential_seed_queue_worker
+    exit $?
   fi
+
+  if [[ -f "$SEED_QUEUE_DONE_MARKER" ]]; then
+    echo "Sequential queue already completed; skipping launch."
+    echo "Queue completion marker: $SEED_QUEUE_DONE_MARKER"
+    exit 0
+  fi
+
+  if tmux has-session -t "$SEED_QUEUE_SESSION_NAME" 2>/dev/null; then
+    echo "tmux session '$SEED_QUEUE_SESSION_NAME' is already running; skipping launch."
+    exit 0
+  fi
+
+  rm -f "$SEED_QUEUE_FAILED_MARKER" "$SEED_QUEUE_STATUS_FILE"
+  tmux_cmd="bash -lc 'cd \"$REPO_DIR\"; export TPUNANNY_SEED_QUEUE_WORKER=true; bash \"$REPO_DIR/run.sh\" >> \"$SEED_QUEUE_LOG_FILE\" 2>&1'"
+  tmux new-session -d -s "$SEED_QUEUE_SESSION_NAME" "$tmux_cmd"
+
+  echo "Started sequential queue tmux session '$SEED_QUEUE_SESSION_NAME'."
+  echo "Seed queue: $SEED_QUEUE"
+  echo "Queue log: $SEED_QUEUE_LOG_FILE"
+  echo "Queue completion marker: $SEED_QUEUE_DONE_MARKER"
+  exit 0
 fi
 
-TRAIN_ARGS+=("--config-name=${CONFIG_NAME}")
-
-printf -v ESCAPED_TRAIN_ARGS '%q ' "${TRAIN_ARGS[@]}"
-TMUX_CMD="bash -lc 'cd \"$REPO_DIR\"; python3 -u main.py ${ESCAPED_TRAIN_ARGS} >> \"$LOG_FILE\" 2>&1; exit_code=\$?; echo \$exit_code > \"$STATUS_FILE\"; if [[ \$exit_code -eq 0 ]] && grep -q \"Saved final checkpoint at step\" \"$LOG_FILE\"; then touch \"$DONE_MARKER\"; rm -f \"$FAILED_MARKER\"; else touch \"$FAILED_MARKER\"; fi; exit \$exit_code'"
-
-tmux new-session -d -s "$SESSION_NAME" "$TMUX_CMD"
-echo "Started tmux session '$SESSION_NAME'."
-echo "Run name: $RUN_NAME"
-echo "Checkpoint path: $CHECKPOINT_BUCKET_PATH"
-echo "Logs: $LOG_FILE"
-echo "Completion marker: $DONE_MARKER"
+launch_single_seed_tmux "$SEED"

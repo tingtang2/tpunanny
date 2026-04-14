@@ -78,6 +78,13 @@ use_chinchilla = os.environ.get('USE_CHINCHILLA', 'false')
 use_z_loss = os.environ.get('USE_Z_LOSS', '')
 follow_logs = os.environ.get('FOLLOW_LOGS', 'false').strip().lower() == 'true'
 follow_log_lines = os.environ.get('FOLLOW_LOG_LINES', '200')
+sequential_seeds_on_single_tpu = (
+    os.environ.get('SEQUENTIAL_SEEDS_ON_SINGLE_TPU', 'false').strip().lower() == 'true'
+)
+
+seed_zone_by_idx = {}
+for offset, seed in enumerate(seed_idxs):
+    seed_zone_by_idx[seed] = seed_zone_map.get(seed, zones[offset % len(zones)])
 
 zones_by_idx = {}
 ssh_script_by_idx = {}
@@ -85,24 +92,39 @@ follow_logs_command_by_idx = {}
 healthcheck_command_by_idx = {}
 completion_command_by_idx = {}
 checkpoint_root_by_region = {}
-for offset, seed in enumerate(seed_idxs):
-    seed_zone = seed_zone_map.get(seed, zones[offset % len(zones)])
-    zones_by_idx[seed] = seed_zone
-    seed_region = seed_zone.rsplit('-', 1)[0]
+babysit_idxs = seed_idxs
+
+if sequential_seeds_on_single_tpu:
+    controller_seed = seed_idxs[0]
+    controller_zone = seed_zone_by_idx[controller_seed]
+    zones_by_idx[controller_seed] = controller_zone
+    controller_region = controller_zone.rsplit('-', 1)[0]
+
+    unique_zones = sorted(set(seed_zone_by_idx.values()))
+    if len(unique_zones) > 1:
+        print(
+            '[run_picodo] SEQUENTIAL_SEEDS_ON_SINGLE_TPU=true ignores per-seed zone overrides; '
+            f'using only {controller_zone} for all seeds {seed_idxs}. Requested zones: {unique_zones}'
+        )
 
     if checkpoint_root:
-        seed_checkpoint_root = checkpoint_root
+        shared_checkpoint_root = checkpoint_root
     else:
-        if seed_region not in checkpoint_root_by_region:
-            fineweb_bucket = tn.get_fineweb_bucket_name(seed_zone, project_id)
-            checkpoint_root_by_region[seed_region] = f'gs://{fineweb_bucket}/picodo_ckpts'
-        seed_checkpoint_root = checkpoint_root_by_region[seed_region]
+        fineweb_bucket = tn.get_fineweb_bucket_name(controller_zone, project_id)
+        shared_checkpoint_root = f'gs://{fineweb_bucket}/picodo_ckpts'
+
+    seed_queue_csv = ','.join(str(seed) for seed in seed_idxs)
+    seed_queue_slug = '-'.join(str(seed) for seed in seed_idxs)
+    queue_session_name = f'picodo_train_queue_seed{seed_idxs[0]}_to{seed_idxs[-1]}'
+    queue_run_name = f'{run_name_prefix}_seeds{seed_queue_slug}_lr{lr_tag}_bs{batch_size}'
+    queue_done_marker = f'/home/tingchen/loss-spikes-project/picodo/train_status/{queue_run_name}.done'
+    queue_log_path = f'/home/tingchen/loss-spikes-project/picodo/train_logs/{queue_run_name}.log'
 
     env_exports = {
-        'SEED': str(seed),
+        'SEED': str(controller_seed),
         'LR_TAG': lr_tag,
         'RUN_NAME_PREFIX': run_name_prefix,
-        'CHECKPOINT_ROOT': seed_checkpoint_root,
+        'CHECKPOINT_ROOT': shared_checkpoint_root,
         'BATCH_SIZE': batch_size,
         'NUM_TP_DEVICES': num_tp_devices,
         'WANDB_MODE': wandb_mode,
@@ -112,6 +134,11 @@ for offset, seed in enumerate(seed_idxs):
         'USE_CHINCHILLA': use_chinchilla,
         'USE_Z_LOSS': use_z_loss,
         'WANDB_TOKEN': wandb_token,
+        'SEQUENTIAL_SEEDS_ON_SINGLE_TPU': 'true',
+        'SEED_QUEUE': seed_queue_csv,
+        'SEED_QUEUE_SESSION_NAME': queue_session_name,
+        'SEED_QUEUE_DONE_MARKER': queue_done_marker,
+        'SEED_QUEUE_LOG_FILE': queue_log_path,
     }
     if hf_token:
         env_exports['HF_TOKEN'] = hf_token
@@ -122,18 +149,74 @@ for offset, seed in enumerate(seed_idxs):
         f"export {key}={shlex.quote(value)}"
         for key, value in env_exports.items()
     )
-    ssh_script_by_idx[seed] = f"{exports_text}\n{run_script}"
-    healthcheck_command_by_idx[seed] = f"tmux has-session -t {shlex.quote(f'picodo_train_seed{seed}')}"
-    done_marker = f"/home/tingchen/loss-spikes-project/picodo/train_status/{run_name_prefix}_seed{seed}_lr{lr_tag}.done"
-    completion_command_by_idx[seed] = f"test -f {shlex.quote(done_marker)}"
-
+    ssh_script_by_idx[controller_seed] = f"{exports_text}\n{run_script}"
+    healthcheck_command_by_idx[controller_seed] = f"tmux has-session -t {shlex.quote(queue_session_name)}"
+    completion_command_by_idx[controller_seed] = f"test -f {shlex.quote(queue_done_marker)}"
     if follow_logs:
-        run_name = f"{run_name_prefix}_seed{seed}_lr{lr_tag}_bs{batch_size}"
-        log_path = f"/home/tingchen/loss-spikes-project/picodo/train_logs/{run_name}.log"
-        follow_logs_command_by_idx[seed] = f"tail -n {shlex.quote(follow_log_lines)} -F {shlex.quote(log_path)}"
+        follow_logs_command_by_idx[controller_seed] = (
+            f"tail -n {shlex.quote(follow_log_lines)} -F {shlex.quote(queue_log_path)}"
+        )
+
+    babysit_idxs = [controller_seed]
+    print(
+        f'[run_picodo] sequential seed queue enabled for seeds={seed_idxs} in zone={controller_zone} '
+        f'(region={controller_region}) on a single TPU VM.'
+    )
+else:
+    for seed in seed_idxs:
+        seed_zone = seed_zone_by_idx[seed]
+        zones_by_idx[seed] = seed_zone
+        seed_region = seed_zone.rsplit('-', 1)[0]
+
+        if checkpoint_root:
+            seed_checkpoint_root = checkpoint_root
+        else:
+            if seed_region not in checkpoint_root_by_region:
+                fineweb_bucket = tn.get_fineweb_bucket_name(seed_zone, project_id)
+                checkpoint_root_by_region[seed_region] = f'gs://{fineweb_bucket}/picodo_ckpts'
+            seed_checkpoint_root = checkpoint_root_by_region[seed_region]
+
+        env_exports = {
+            'SEED': str(seed),
+            'LR_TAG': lr_tag,
+            'RUN_NAME_PREFIX': run_name_prefix,
+            'CHECKPOINT_ROOT': seed_checkpoint_root,
+            'BATCH_SIZE': batch_size,
+            'NUM_TP_DEVICES': num_tp_devices,
+            'WANDB_MODE': wandb_mode,
+            'CONFIG_NAME': config_name,
+            'CHECKPOINT_FREQ': checkpoint_freq,
+            'EVAL_FREQ': eval_freq,
+            'USE_CHINCHILLA': use_chinchilla,
+            'USE_Z_LOSS': use_z_loss,
+            'WANDB_TOKEN': wandb_token,
+        }
+        if hf_token:
+            env_exports['HF_TOKEN'] = hf_token
+        if lr_arg:
+            env_exports['LR_ARG'] = lr_arg
+
+        exports_text = '\n'.join(
+            f"export {key}={shlex.quote(value)}"
+            for key, value in env_exports.items()
+        )
+        ssh_script_by_idx[seed] = f"{exports_text}\n{run_script}"
+        healthcheck_command_by_idx[seed] = f"tmux has-session -t {shlex.quote(f'picodo_train_seed{seed}')}"
+        done_marker = (
+            f"/home/tingchen/loss-spikes-project/picodo/train_status/"
+            f"{run_name_prefix}_seed{seed}_lr{lr_tag}_bs{batch_size}.done"
+        )
+        completion_command_by_idx[seed] = f"test -f {shlex.quote(done_marker)}"
+
+        if follow_logs:
+            run_name = f"{run_name_prefix}_seed{seed}_lr{lr_tag}_bs{batch_size}"
+            log_path = f"/home/tingchen/loss-spikes-project/picodo/train_logs/{run_name}.log"
+            follow_logs_command_by_idx[seed] = (
+                f"tail -n {shlex.quote(follow_log_lines)} -F {shlex.quote(log_path)}"
+            )
 
 tn.babysit(
-    idxs=seed_idxs,
+    idxs=babysit_idxs,
     tpu_type=tpu_type,
     zone=default_zone,
     project_id=project_id,
