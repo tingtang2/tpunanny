@@ -34,6 +34,7 @@ if [[ -z "$CHECKPOINT_ROOT" ]] && [[ -n "${TPUNANNY_FINEWEB_BUCKET_OBJECT:-}" ]]
 fi
 USE_CHINCHILLA="${USE_CHINCHILLA:-false}"
 USE_Z_LOSS="${USE_Z_LOSS:-}"
+USE_MU_CENTERING="${USE_MU_CENTERING:-}"
 USE_B2_COSINE_ANNEAL="${USE_B2_COSINE_ANNEAL:-}"
 B2_ARG="${B2_ARG:-}"
 FINAL_B2_ARG="${FINAL_B2_ARG:-}"
@@ -68,6 +69,7 @@ TPUNANNY_SEED_QUEUE_WORKER="${TPUNANNY_SEED_QUEUE_WORKER:-false}"
 
 export SEED LR_TAG LR_ARG RUN_NAME_PREFIX NUM_TP_DEVICES BATCH_SIZE WANDB_MODE CONFIG_NAME
 export EVAL_FREQ CHECKPOINT_FREQ CHECKPOINT_ROOT USE_CHINCHILLA USE_Z_LOSS
+export USE_MU_CENTERING
 export USE_B2_COSINE_ANNEAL B2_ARG FINAL_B2_ARG
 export SEQUENTIAL_SEEDS_ON_SINGLE_TPU SEED_QUEUE SEED_QUEUE_SESSION_NAME
 export SEED_QUEUE_DONE_MARKER SEED_QUEUE_FAILED_MARKER SEED_QUEUE_STATUS_FILE SEED_QUEUE_LOG_FILE
@@ -225,6 +227,17 @@ build_train_args_for_seed() {
       TRAIN_ARGS+=("opt.use_z_loss=False")
     else
       echo "ERROR: USE_Z_LOSS must be one of: true, false, or unset. Got: $USE_Z_LOSS" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -n "$USE_MU_CENTERING" ]]; then
+    if [[ "${USE_MU_CENTERING,,}" == "true" ]]; then
+      TRAIN_ARGS+=("+opt.mucentering=True")
+    elif [[ "${USE_MU_CENTERING,,}" == "false" ]]; then
+      TRAIN_ARGS+=("+opt.mucentering=False")
+    else
+      echo "ERROR: USE_MU_CENTERING must be one of: true, false, or unset. Got: $USE_MU_CENTERING" >&2
       exit 1
     fi
   fi
