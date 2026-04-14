@@ -107,8 +107,10 @@ for offset, seed in enumerate(seed_idxs):
 zones_by_idx = {}
 ssh_script_by_idx = {}
 follow_logs_command_by_idx = {}
+follow_logs_worker_by_idx = {}
 healthcheck_command_by_idx = {}
 completion_command_by_idx = {}
+ssh_worker_by_idx = {}
 checkpoint_root_by_region = {}
 babysit_idxs = seed_idxs
 
@@ -172,12 +174,14 @@ if sequential_seeds_on_single_tpu:
         f"{remote_runner_bootstrap}\n"
         f"bash {shlex.quote(remote_runner_script_path)}"
     )
+    ssh_worker_by_idx[controller_seed] = '0'
     healthcheck_command_by_idx[controller_seed] = f"tmux has-session -t {shlex.quote(queue_session_name)}"
     completion_command_by_idx[controller_seed] = f"test -f {shlex.quote(queue_done_marker)}"
     if follow_logs:
         follow_logs_command_by_idx[controller_seed] = (
             f"tail -n {shlex.quote(follow_log_lines)} -F {shlex.quote(queue_log_path)}"
         )
+        follow_logs_worker_by_idx[controller_seed] = '0'
 
     babysit_idxs = [controller_seed]
     print(
@@ -249,8 +253,10 @@ tn.babysit(
     ssh_script=run_script,
     ssh_script_by_idx=ssh_script_by_idx,
     follow_logs_command_by_idx=follow_logs_command_by_idx,
+    follow_logs_worker_by_idx=follow_logs_worker_by_idx,
     healthcheck_command_by_idx=healthcheck_command_by_idx,
     completion_command_by_idx=completion_command_by_idx,
+    ssh_worker_by_idx=ssh_worker_by_idx,
     delete_on_completion=True,
     zones_by_idx=zones_by_idx,
     tpu_id_prefix=tpu_id_prefix,

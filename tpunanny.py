@@ -456,7 +456,15 @@ def _run(tpu_id, zone, project_id, ssh_script, log_prefix='ssh', worker='all'):
     )
 
 
-def _follow_logs(tpu_id, zone, project_id, stop_event, follow_logs_command, retry_seconds=10):
+def _follow_logs(
+    tpu_id,
+    zone,
+    project_id,
+    stop_event,
+    follow_logs_command,
+    retry_seconds=10,
+    worker='all',
+):
     """Continuously tails logs on TPU workers, reconnecting if SSH/IAP drops."""
     qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
     while not stop_event.is_set():
@@ -466,7 +474,14 @@ def _follow_logs(tpu_id, zone, project_id, stop_event, follow_logs_command, retr
             continue
 
         print(f'[{tpu_id}] starting follow-logs session...')
-        result = _run(tpu_id, zone, project_id, follow_logs_command, log_prefix='follow_logs')
+        result = _run(
+            tpu_id,
+            zone,
+            project_id,
+            follow_logs_command,
+            log_prefix='follow_logs',
+            worker=worker,
+        )
         print(f'[{tpu_id}] follow-logs session exited with code {result.returncode}.')
         if stop_event.is_set():
             break
@@ -491,6 +506,8 @@ def _babysit(
     completion_command=None,
     delete_on_completion=True,
     fineweb_cache_config=None,
+    ssh_worker='all',
+    follow_logs_worker='all',
 ):
     """(Re)creates TPU and runs `ssh_script`."""
     qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
@@ -572,7 +589,7 @@ def _babysit(
 
             # run ssh script
             print(f'[{tpu_id}] running ssh script...')
-            result = _run(tpu_id, zone, project_id, wrapped_ssh_script)
+            result = _run(tpu_id, zone, project_id, wrapped_ssh_script, worker=ssh_worker)
             print(f'[{tpu_id}] ssh script finished with exit code {result.returncode}.')
             ran_ssh_script = True
 
@@ -580,7 +597,15 @@ def _babysit(
                 print(f'[{tpu_id}] follow-logs mode enabled.')
                 follow_logs_thread = threading.Thread(
                     target=_follow_logs,
-                    args=(tpu_id, zone, project_id, stop_event, follow_logs_command),
+                    args=(
+                        tpu_id,
+                        zone,
+                        project_id,
+                        stop_event,
+                        follow_logs_command,
+                        10,
+                        follow_logs_worker,
+                    ),
                     daemon=True,
                 )
                 follow_logs_thread.start()
@@ -603,10 +628,14 @@ def babysit(
     ssh_script_by_idx=None,
     follow_logs_command=None,
     follow_logs_command_by_idx=None,
+    follow_logs_worker='all',
+    follow_logs_worker_by_idx=None,
     healthcheck_command=None,
     healthcheck_command_by_idx=None,
     completion_command=None,
     completion_command_by_idx=None,
+    ssh_worker='all',
+    ssh_worker_by_idx=None,
     delete_on_completion=True,
     tpu_id_prefix='tn',
     ensure_fineweb_cache=True,
@@ -624,8 +653,10 @@ def babysit(
     zones_by_idx = zones_by_idx or {}
     ssh_script_by_idx = ssh_script_by_idx or {}
     follow_logs_command_by_idx = follow_logs_command_by_idx or {}
+    follow_logs_worker_by_idx = follow_logs_worker_by_idx or {}
     healthcheck_command_by_idx = healthcheck_command_by_idx or {}
     completion_command_by_idx = completion_command_by_idx or {}
+    ssh_worker_by_idx = ssh_worker_by_idx or {}
     fineweb_cache_by_idx = {}
     zones_to_use = sorted({zones_by_idx.get(idx, zone) for idx in idxs})
 
@@ -670,8 +701,10 @@ def babysit(
         idx_zone = zones_by_idx.get(idx, zone)
         idx_ssh_script = ssh_script_by_idx.get(idx, ssh_script)
         idx_follow_logs_command = follow_logs_command_by_idx.get(idx, follow_logs_command)
+        idx_follow_logs_worker = follow_logs_worker_by_idx.get(idx, follow_logs_worker)
         idx_healthcheck_command = healthcheck_command_by_idx.get(idx, healthcheck_command)
         idx_completion_command = completion_command_by_idx.get(idx, completion_command)
+        idx_ssh_worker = ssh_worker_by_idx.get(idx, ssh_worker)
         idx_fineweb_cache_config = fineweb_cache_by_idx.get(idx)
         tpu_id = f'{tpu_id_prefix}-{tpu_type}-{idx}'
         thread = threading.Thread(
@@ -689,6 +722,8 @@ def babysit(
                 idx_completion_command,
                 delete_on_completion,
                 idx_fineweb_cache_config,
+                idx_ssh_worker,
+                idx_follow_logs_worker,
             ),
             daemon=True,
         )

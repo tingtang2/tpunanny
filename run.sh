@@ -228,6 +228,20 @@ build_train_args_for_seed() {
   TRAIN_ARGS+=("--config-name=${CONFIG_NAME}")
 }
 
+log_indicates_completed_run() {
+  local log_file="$1"
+
+  if grep -q "Saved final checkpoint at step" "$log_file"; then
+    return 0
+  fi
+
+  if grep -q "orbax.checkpoint.checkpoint_manager.StepAlreadyExistsError: Checkpoint for step .* already exists." "$log_file"; then
+    return 0
+  fi
+
+  return 1
+}
+
 run_single_seed_sync() {
   local seed="$1"
   local run_name="${RUN_NAME_PREFIX}_seed${seed}_lr${LR_TAG}_bs${BATCH_SIZE}"
@@ -252,10 +266,17 @@ run_single_seed_sync() {
   set -e
   echo "$exit_code" > "$status_file"
 
-  if [[ $exit_code -eq 0 ]] && grep -q "Saved final checkpoint at step" "$log_file"; then
+  if [[ $exit_code -eq 0 ]] && log_indicates_completed_run "$log_file"; then
     touch "$done_marker"
     rm -f "$failed_marker"
     echo "Seed ${seed} completed successfully."
+    return 0
+  fi
+
+  if [[ $exit_code -ne 0 ]] && log_indicates_completed_run "$log_file"; then
+    touch "$done_marker"
+    rm -f "$failed_marker"
+    echo "Seed ${seed} appears already completed; treating existing checkpoint as success."
     return 0
   fi
 
@@ -288,7 +309,7 @@ launch_single_seed_tmux() {
   rm -f "$failed_marker" "$status_file"
   build_train_args_for_seed "$seed" "$run_name" "$checkpoint_bucket_path"
   printf -v escaped_train_args '%q ' "${TRAIN_ARGS[@]}"
-  tmux_cmd="bash -lc 'cd \"$REPO_DIR\"; python3 -u main.py ${escaped_train_args} >> \"$log_file\" 2>&1; exit_code=\$?; echo \$exit_code > \"$status_file\"; if [[ \$exit_code -eq 0 ]] && grep -q \"Saved final checkpoint at step\" \"$log_file\"; then touch \"$done_marker\"; rm -f \"$failed_marker\"; else touch \"$failed_marker\"; fi; exit \$exit_code'"
+  tmux_cmd="bash -lc 'cd \"$REPO_DIR\"; python3 -u main.py ${escaped_train_args} >> \"$log_file\" 2>&1; exit_code=\$?; echo \$exit_code > \"$status_file\"; if grep -q \"Saved final checkpoint at step\" \"$log_file\" || grep -q \"orbax.checkpoint.checkpoint_manager.StepAlreadyExistsError: Checkpoint for step .* already exists.\" \"$log_file\"; then touch \"$done_marker\"; rm -f \"$failed_marker\"; exit 0; else touch \"$failed_marker\"; fi; exit \$exit_code'"
 
   tmux new-session -d -s "$session_name" "$tmux_cmd"
   echo "Started tmux session '$session_name'."
