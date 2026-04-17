@@ -93,6 +93,7 @@ config_name = os.environ.get('CONFIG_NAME', 'wortsman_default')
 checkpoint_freq = os.environ.get('CHECKPOINT_FREQ', '10000')
 eval_freq = os.environ.get('EVAL_FREQ', '100')
 use_chinchilla = os.environ.get('USE_CHINCHILLA', 'false')
+use_log_metrics_per_step = os.environ.get('USE_LOG_METRICS_PER_STEP', '')
 use_z_loss = os.environ.get('USE_Z_LOSS', '')
 use_mu_centering = os.environ.get('USE_MU_CENTERING', '')
 use_b2_cosine_anneal = os.environ.get('USE_B2_COSINE_ANNEAL', '')
@@ -154,6 +155,7 @@ if sequential_seeds_on_single_tpu:
         'CHECKPOINT_FREQ': checkpoint_freq,
         'EVAL_FREQ': eval_freq,
         'USE_CHINCHILLA': use_chinchilla,
+        'USE_LOG_METRICS_PER_STEP': use_log_metrics_per_step,
         'USE_Z_LOSS': use_z_loss,
         'USE_MU_CENTERING': use_mu_centering,
         'USE_B2_COSINE_ANNEAL': use_b2_cosine_anneal,
@@ -218,6 +220,7 @@ else:
             'CHECKPOINT_FREQ': checkpoint_freq,
             'EVAL_FREQ': eval_freq,
             'USE_CHINCHILLA': use_chinchilla,
+            'USE_LOG_METRICS_PER_STEP': use_log_metrics_per_step,
             'USE_Z_LOSS': use_z_loss,
             'USE_MU_CENTERING': use_mu_centering,
             'USE_B2_COSINE_ANNEAL': use_b2_cosine_anneal,

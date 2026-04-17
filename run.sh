@@ -33,6 +33,7 @@ if [[ -z "$CHECKPOINT_ROOT" ]] && [[ -n "${TPUNANNY_FINEWEB_BUCKET_OBJECT:-}" ]]
   fi
 fi
 USE_CHINCHILLA="${USE_CHINCHILLA:-false}"
+USE_LOG_METRICS_PER_STEP="${USE_LOG_METRICS_PER_STEP:-}"
 USE_Z_LOSS="${USE_Z_LOSS:-}"
 USE_MU_CENTERING="${USE_MU_CENTERING:-}"
 USE_B2_COSINE_ANNEAL="${USE_B2_COSINE_ANNEAL:-}"
@@ -69,7 +70,7 @@ TPUNANNY_SEED_QUEUE_WORKER="${TPUNANNY_SEED_QUEUE_WORKER:-false}"
 
 export SEED LR_TAG LR_ARG RUN_NAME_PREFIX NUM_TP_DEVICES BATCH_SIZE WANDB_MODE CONFIG_NAME
 export EVAL_FREQ CHECKPOINT_FREQ CHECKPOINT_ROOT USE_CHINCHILLA USE_Z_LOSS
-export USE_MU_CENTERING
+export USE_LOG_METRICS_PER_STEP USE_MU_CENTERING
 export USE_B2_COSINE_ANNEAL B2_ARG FINAL_B2_ARG
 export SEQUENTIAL_SEEDS_ON_SINGLE_TPU SEED_QUEUE SEED_QUEUE_SESSION_NAME
 export SEED_QUEUE_DONE_MARKER SEED_QUEUE_FAILED_MARKER SEED_QUEUE_STATUS_FILE SEED_QUEUE_LOG_FILE
@@ -218,6 +219,17 @@ build_train_args_for_seed() {
 
   if [[ "${USE_CHINCHILLA,,}" == "true" ]]; then
     TRAIN_ARGS+=("num_tokens_train=null")
+  fi
+
+  if [[ -n "$USE_LOG_METRICS_PER_STEP" ]]; then
+    if [[ "${USE_LOG_METRICS_PER_STEP,,}" == "true" ]]; then
+      TRAIN_ARGS+=("log_metrics_per_step=True")
+    elif [[ "${USE_LOG_METRICS_PER_STEP,,}" == "false" ]]; then
+      TRAIN_ARGS+=("log_metrics_per_step=False")
+    else
+      echo "ERROR: USE_LOG_METRICS_PER_STEP must be one of: true, false, or unset. Got: $USE_LOG_METRICS_PER_STEP" >&2
+      exit 1
+    fi
   fi
 
   if [[ -n "$USE_Z_LOSS" ]]; then
