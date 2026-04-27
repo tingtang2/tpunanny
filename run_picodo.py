@@ -137,7 +137,8 @@ if sequential_seeds_on_single_tpu:
     if checkpoint_root:
         shared_checkpoint_root = checkpoint_root
     else:
-        fineweb_bucket = tn.get_fineweb_bucket_name(controller_zone, project_id)
+        # force fineweb bucket to be in loss spikes
+        fineweb_bucket = tn.get_fineweb_bucket_name(controller_zone, project_id='loss-spikes')
         shared_checkpoint_root = f'gs://{fineweb_bucket}/picodo_ckpts'
 
     seed_queue_csv = ','.join(str(seed) for seed in seed_idxs)
@@ -212,7 +213,8 @@ else:
             seed_checkpoint_root = checkpoint_root
         else:
             if seed_region not in checkpoint_root_by_region:
-                fineweb_bucket = tn.get_fineweb_bucket_name(seed_zone, project_id)
+                # force fineweb bucket to be in loss spikes
+                fineweb_bucket = tn.get_fineweb_bucket_name(seed_zone, project_id='loss-spikes')
                 checkpoint_root_by_region[seed_region] = f'gs://{fineweb_bucket}/picodo_ckpts'
             seed_checkpoint_root = checkpoint_root_by_region[seed_region]
 
