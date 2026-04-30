@@ -100,6 +100,7 @@ lm_head_weighted_columnwise_gradient_centering_arg = os.environ.get(
 )
 use_z_loss = os.environ.get('USE_Z_LOSS', '')
 use_mu_centering = os.environ.get('USE_MU_CENTERING', '')
+use_lm_head_sgd_momentum = os.environ.get('USE_LM_HEAD_SGD_MOMENTUM', '')
 use_b2_cosine_anneal = os.environ.get('USE_B2_COSINE_ANNEAL', '')
 b2_arg = os.environ.get('B2_ARG', '')
 final_b2_arg = os.environ.get('FINAL_B2_ARG', '')
@@ -167,6 +168,7 @@ if sequential_seeds_on_single_tpu:
         ),
         'USE_Z_LOSS': use_z_loss,
         'USE_MU_CENTERING': use_mu_centering,
+        'USE_LM_HEAD_SGD_MOMENTUM': use_lm_head_sgd_momentum,
         'USE_B2_COSINE_ANNEAL': use_b2_cosine_anneal,
         'B2_ARG': b2_arg,
         'FINAL_B2_ARG': final_b2_arg,
@@ -237,6 +239,7 @@ else:
             ),
             'USE_Z_LOSS': use_z_loss,
             'USE_MU_CENTERING': use_mu_centering,
+            'USE_LM_HEAD_SGD_MOMENTUM': use_lm_head_sgd_momentum,
             'USE_B2_COSINE_ANNEAL': use_b2_cosine_anneal,
             'B2_ARG': b2_arg,
             'FINAL_B2_ARG': final_b2_arg,
