@@ -39,6 +39,10 @@ LM_HEAD_WEIGHTED_COLUMNWISE_GRADIENT_CENTERING_ARG="${LM_HEAD_WEIGHTED_COLUMNWIS
 USE_Z_LOSS="${USE_Z_LOSS:-}"
 USE_MU_CENTERING="${USE_MU_CENTERING:-}"
 USE_LM_HEAD_SGD_MOMENTUM="${USE_LM_HEAD_SGD_MOMENTUM:-}"
+LM_HEAD_OPTIMIZER_MOMENTUM_ARG="${LM_HEAD_OPTIMIZER_MOMENTUM_ARG:-}"
+LM_HEAD_OPTIMIZER_B1_ARG="${LM_HEAD_OPTIMIZER_B1_ARG:-}"
+USE_MUON_BRANCH="${USE_MUON_BRANCH:-}"
+OPTIMIZER_ARG="${OPTIMIZER_ARG:-}"
 USE_B2_COSINE_ANNEAL="${USE_B2_COSINE_ANNEAL:-}"
 B2_ARG="${B2_ARG:-}"
 FINAL_B2_ARG="${FINAL_B2_ARG:-}"
@@ -76,6 +80,9 @@ export EVAL_FREQ CHECKPOINT_FREQ CHECKPOINT_ROOT USE_CHINCHILLA USE_Z_LOSS
 export USE_LOG_METRICS_PER_STEP LM_HEAD_GRADIENT_CENTERING_ARG
 export LM_HEAD_WEIGHTED_COLUMNWISE_GRADIENT_CENTERING_ARG USE_MU_CENTERING
 export USE_LM_HEAD_SGD_MOMENTUM
+export LM_HEAD_OPTIMIZER_MOMENTUM_ARG
+export LM_HEAD_OPTIMIZER_B1_ARG
+export USE_MUON_BRANCH OPTIMIZER_ARG
 export USE_B2_COSINE_ANNEAL B2_ARG FINAL_B2_ARG
 export SEQUENTIAL_SEEDS_ON_SINGLE_TPU SEED_QUEUE SEED_QUEUE_SESSION_NAME
 export SEED_QUEUE_DONE_MARKER SEED_QUEUE_FAILED_MARKER SEED_QUEUE_STATUS_FILE SEED_QUEUE_LOG_FILE
@@ -116,6 +123,38 @@ apt_with_retry() {
   return 1
 }
 
+sync_repo_branch() {
+  local target_branch=""
+
+  if [[ -n "$USE_MUON_BRANCH" ]]; then
+    case "${USE_MUON_BRANCH,,}" in
+      true)
+        target_branch="muon"
+        ;;
+      false)
+        target_branch="main"
+        ;;
+      *)
+        echo "ERROR: USE_MUON_BRANCH must be one of: true, false, or unset. Got: $USE_MUON_BRANCH" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  if [[ -z "$target_branch" ]]; then
+    git pull --ff-only || true
+    return
+  fi
+
+  git fetch origin "$target_branch"
+  if git show-ref --verify --quiet "refs/heads/${target_branch}"; then
+    git checkout "$target_branch"
+  else
+    git checkout -B "$target_branch" "origin/${target_branch}"
+  fi
+  git pull --ff-only origin "$target_branch" || true
+}
+
 ensure_setup() {
   if [[ -f "$SETUP_MARKER" ]]; then
     echo "Setup marker exists; skipping bootstrap."
@@ -140,6 +179,7 @@ ensure_setup() {
   fi
 
   cd "$REPO_DIR"
+  sync_repo_branch
   uv pip install -r requirements.txt
 
   git config --global user.email "zc2666@columbia.edu"
@@ -222,6 +262,10 @@ build_train_args_for_seed() {
     TRAIN_ARGS+=("$LR_ARG")
   fi
 
+  if [[ -n "$OPTIMIZER_ARG" ]]; then
+    TRAIN_ARGS+=("$OPTIMIZER_ARG")
+  fi
+
   if [[ "${USE_CHINCHILLA,,}" == "true" ]]; then
     TRAIN_ARGS+=("num_tokens_train=null")
   fi
@@ -292,6 +336,14 @@ build_train_args_for_seed() {
       echo "ERROR: USE_LM_HEAD_SGD_MOMENTUM must be one of: true, false, or unset. Got: $USE_LM_HEAD_SGD_MOMENTUM" >&2
       exit 1
     fi
+  fi
+
+  if [[ -n "$LM_HEAD_OPTIMIZER_MOMENTUM_ARG" ]]; then
+    TRAIN_ARGS+=("opt.lm_head_optimizer.momentum=${LM_HEAD_OPTIMIZER_MOMENTUM_ARG}")
+  fi
+
+  if [[ -n "$LM_HEAD_OPTIMIZER_B1_ARG" ]]; then
+    TRAIN_ARGS+=("opt.lm_head_optimizer.b1=${LM_HEAD_OPTIMIZER_B1_ARG}")
   fi
 
   if [[ -n "$USE_B2_COSINE_ANNEAL" ]]; then
@@ -474,7 +526,7 @@ source "$USER_HOME/.local/bin/env"
 source "$VENV_DIR/bin/activate"
 cd "$REPO_DIR"
 
-git pull --ff-only || true
+sync_repo_branch
 mkdir -p "$LOG_DIR"
 mkdir -p "$STATUS_DIR"
 
