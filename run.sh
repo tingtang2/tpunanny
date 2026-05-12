@@ -39,8 +39,12 @@ LM_HEAD_WEIGHTED_COLUMNWISE_GRADIENT_CENTERING_ARG="${LM_HEAD_WEIGHTED_COLUMNWIS
 USE_Z_LOSS="${USE_Z_LOSS:-}"
 USE_MU_CENTERING="${USE_MU_CENTERING:-}"
 USE_LM_HEAD_SGD_MOMENTUM="${USE_LM_HEAD_SGD_MOMENTUM:-}"
+USE_LM_HEAD_ROW_OBLIQUE="${USE_LM_HEAD_ROW_OBLIQUE:-}"
 LM_HEAD_OPTIMIZER_MOMENTUM_ARG="${LM_HEAD_OPTIMIZER_MOMENTUM_ARG:-}"
 LM_HEAD_OPTIMIZER_B1_ARG="${LM_HEAD_OPTIMIZER_B1_ARG:-}"
+USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS="${USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS:-}"
+LM_HEAD_OPTIMIZER_TARGET_RMS_ARG="${LM_HEAD_OPTIMIZER_TARGET_RMS_ARG:-}"
+USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT="${USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT:-}"
 USE_MUON_BRANCH="${USE_MUON_BRANCH:-}"
 OPTIMIZER_ARG="${OPTIMIZER_ARG:-}"
 USE_B2_COSINE_ANNEAL="${USE_B2_COSINE_ANNEAL:-}"
@@ -80,8 +84,12 @@ export EVAL_FREQ CHECKPOINT_FREQ CHECKPOINT_ROOT USE_CHINCHILLA USE_Z_LOSS
 export USE_LOG_METRICS_PER_STEP LM_HEAD_GRADIENT_CENTERING_ARG
 export LM_HEAD_WEIGHTED_COLUMNWISE_GRADIENT_CENTERING_ARG USE_MU_CENTERING
 export USE_LM_HEAD_SGD_MOMENTUM
+export USE_LM_HEAD_ROW_OBLIQUE
 export LM_HEAD_OPTIMIZER_MOMENTUM_ARG
 export LM_HEAD_OPTIMIZER_B1_ARG
+export USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS
+export LM_HEAD_OPTIMIZER_TARGET_RMS_ARG
+export USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT
 export USE_MUON_BRANCH OPTIMIZER_ARG
 export USE_B2_COSINE_ANNEAL B2_ARG FINAL_B2_ARG
 export SEQUENTIAL_SEEDS_ON_SINGLE_TPU SEED_QUEUE SEED_QUEUE_SESSION_NAME
@@ -338,12 +346,49 @@ build_train_args_for_seed() {
     fi
   fi
 
+  if [[ -n "$USE_LM_HEAD_ROW_OBLIQUE" ]]; then
+    if [[ "${USE_LM_HEAD_ROW_OBLIQUE,,}" == "true" ]]; then
+      TRAIN_ARGS+=("opt.lm_head_optimizer.type=row_oblique")
+    elif [[ "${USE_LM_HEAD_ROW_OBLIQUE,,}" == "false" ]]; then
+      TRAIN_ARGS+=("opt.lm_head_optimizer.type=adamw")
+    else
+      echo "ERROR: USE_LM_HEAD_ROW_OBLIQUE must be one of: true, false, or unset. Got: $USE_LM_HEAD_ROW_OBLIQUE" >&2
+      exit 1
+    fi
+  fi
+
   if [[ -n "$LM_HEAD_OPTIMIZER_MOMENTUM_ARG" ]]; then
     TRAIN_ARGS+=("opt.lm_head_optimizer.momentum=${LM_HEAD_OPTIMIZER_MOMENTUM_ARG}")
   fi
 
   if [[ -n "$LM_HEAD_OPTIMIZER_B1_ARG" ]]; then
     TRAIN_ARGS+=("opt.lm_head_optimizer.b1=${LM_HEAD_OPTIMIZER_B1_ARG}")
+  fi
+
+  if [[ -n "$USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS" ]]; then
+    if [[ "${USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS,,}" == "true" ]]; then
+      TRAIN_ARGS+=("opt.lm_head_optimizer.learn_target_rms=True")
+    elif [[ "${USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS,,}" == "false" ]]; then
+      TRAIN_ARGS+=("opt.lm_head_optimizer.learn_target_rms=False")
+    else
+      echo "ERROR: USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS must be one of: true, false, or unset. Got: $USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -n "$LM_HEAD_OPTIMIZER_TARGET_RMS_ARG" ]]; then
+    TRAIN_ARGS+=("opt.lm_head_optimizer.target_rms=${LM_HEAD_OPTIMIZER_TARGET_RMS_ARG}")
+  fi
+
+  if [[ -n "$USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT" ]]; then
+    if [[ "${USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT,,}" == "true" ]]; then
+      TRAIN_ARGS+=("opt.lm_head_optimizer.initial_target_rms_from_random_init=True")
+    elif [[ "${USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT,,}" == "false" ]]; then
+      TRAIN_ARGS+=("opt.lm_head_optimizer.initial_target_rms_from_random_init=False")
+    else
+      echo "ERROR: USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT must be one of: true, false, or unset. Got: $USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT" >&2
+      exit 1
+    fi
   fi
 
   if [[ -n "$USE_B2_COSINE_ANNEAL" ]]; then

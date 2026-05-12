@@ -101,8 +101,16 @@ lm_head_weighted_columnwise_gradient_centering_arg = os.environ.get(
 use_z_loss = os.environ.get('USE_Z_LOSS', '')
 use_mu_centering = os.environ.get('USE_MU_CENTERING', '')
 use_lm_head_sgd_momentum = os.environ.get('USE_LM_HEAD_SGD_MOMENTUM', '')
+use_lm_head_row_oblique = os.environ.get('USE_LM_HEAD_ROW_OBLIQUE', '')
 lm_head_optimizer_momentum_arg = os.environ.get('LM_HEAD_OPTIMIZER_MOMENTUM_ARG', '')
 lm_head_optimizer_b1_arg = os.environ.get('LM_HEAD_OPTIMIZER_B1_ARG', '')
+use_lm_head_optimizer_learn_target_rms = os.environ.get(
+    'USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS', ''
+)
+lm_head_optimizer_target_rms_arg = os.environ.get('LM_HEAD_OPTIMIZER_TARGET_RMS_ARG', '')
+use_lm_head_optimizer_initial_target_rms_from_random_init = os.environ.get(
+    'USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT', ''
+)
 use_muon_branch = os.environ.get('USE_MUON_BRANCH', '')
 optimizer_arg = os.environ.get('OPTIMIZER_ARG', '')
 use_b2_cosine_anneal = os.environ.get('USE_B2_COSINE_ANNEAL', '')
@@ -173,8 +181,16 @@ if sequential_seeds_on_single_tpu:
         'USE_Z_LOSS': use_z_loss,
         'USE_MU_CENTERING': use_mu_centering,
         'USE_LM_HEAD_SGD_MOMENTUM': use_lm_head_sgd_momentum,
+        'USE_LM_HEAD_ROW_OBLIQUE': use_lm_head_row_oblique,
         'LM_HEAD_OPTIMIZER_MOMENTUM_ARG': lm_head_optimizer_momentum_arg,
         'LM_HEAD_OPTIMIZER_B1_ARG': lm_head_optimizer_b1_arg,
+        'USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS': (
+            use_lm_head_optimizer_learn_target_rms
+        ),
+        'LM_HEAD_OPTIMIZER_TARGET_RMS_ARG': lm_head_optimizer_target_rms_arg,
+        'USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT': (
+            use_lm_head_optimizer_initial_target_rms_from_random_init
+        ),
         'USE_MUON_BRANCH': use_muon_branch,
         'OPTIMIZER_ARG': optimizer_arg,
         'USE_B2_COSINE_ANNEAL': use_b2_cosine_anneal,
@@ -248,8 +264,16 @@ else:
             'USE_Z_LOSS': use_z_loss,
             'USE_MU_CENTERING': use_mu_centering,
             'USE_LM_HEAD_SGD_MOMENTUM': use_lm_head_sgd_momentum,
+            'USE_LM_HEAD_ROW_OBLIQUE': use_lm_head_row_oblique,
             'LM_HEAD_OPTIMIZER_MOMENTUM_ARG': lm_head_optimizer_momentum_arg,
             'LM_HEAD_OPTIMIZER_B1_ARG': lm_head_optimizer_b1_arg,
+            'USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS': (
+                use_lm_head_optimizer_learn_target_rms
+            ),
+            'LM_HEAD_OPTIMIZER_TARGET_RMS_ARG': lm_head_optimizer_target_rms_arg,
+            'USE_LM_HEAD_OPTIMIZER_INITIAL_TARGET_RMS_FROM_RANDOM_INIT': (
+                use_lm_head_optimizer_initial_target_rms_from_random_init
+            ),
             'USE_MUON_BRANCH': use_muon_branch,
             'OPTIMIZER_ARG': optimizer_arg,
             'USE_B2_COSINE_ANNEAL': use_b2_cosine_anneal,
