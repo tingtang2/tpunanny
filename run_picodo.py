@@ -102,6 +102,7 @@ use_z_loss = os.environ.get('USE_Z_LOSS', '')
 use_mu_centering = os.environ.get('USE_MU_CENTERING', '')
 use_lm_head_sgd_momentum = os.environ.get('USE_LM_HEAD_SGD_MOMENTUM', '')
 use_lm_head_row_oblique = os.environ.get('USE_LM_HEAD_ROW_OBLIQUE', '')
+lm_head_optimizer_peak_lr_arg = os.environ.get('LM_HEAD_OPTIMIZER_PEAK_LR_ARG', '')
 lm_head_optimizer_momentum_arg = os.environ.get('LM_HEAD_OPTIMIZER_MOMENTUM_ARG', '')
 lm_head_optimizer_b1_arg = os.environ.get('LM_HEAD_OPTIMIZER_B1_ARG', '')
 use_lm_head_optimizer_learn_target_rms = os.environ.get(
@@ -182,6 +183,7 @@ if sequential_seeds_on_single_tpu:
         'USE_MU_CENTERING': use_mu_centering,
         'USE_LM_HEAD_SGD_MOMENTUM': use_lm_head_sgd_momentum,
         'USE_LM_HEAD_ROW_OBLIQUE': use_lm_head_row_oblique,
+        'LM_HEAD_OPTIMIZER_PEAK_LR_ARG': lm_head_optimizer_peak_lr_arg,
         'LM_HEAD_OPTIMIZER_MOMENTUM_ARG': lm_head_optimizer_momentum_arg,
         'LM_HEAD_OPTIMIZER_B1_ARG': lm_head_optimizer_b1_arg,
         'USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS': (
@@ -265,6 +267,7 @@ else:
             'USE_MU_CENTERING': use_mu_centering,
             'USE_LM_HEAD_SGD_MOMENTUM': use_lm_head_sgd_momentum,
             'USE_LM_HEAD_ROW_OBLIQUE': use_lm_head_row_oblique,
+            'LM_HEAD_OPTIMIZER_PEAK_LR_ARG': lm_head_optimizer_peak_lr_arg,
             'LM_HEAD_OPTIMIZER_MOMENTUM_ARG': lm_head_optimizer_momentum_arg,
             'LM_HEAD_OPTIMIZER_B1_ARG': lm_head_optimizer_b1_arg,
             'USE_LM_HEAD_OPTIMIZER_LEARN_TARGET_RMS': (
