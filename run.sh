@@ -134,15 +134,21 @@ apt_with_retry() {
 }
 
 sync_repo_branch() {
-  local target_branch=""
+  local pinned_main_commit="81823a2f01ebf36a1bbb6aeace97d030c384edf7"
 
   if [[ -n "$USE_MUON_BRANCH" ]]; then
     case "${USE_MUON_BRANCH,,}" in
       true)
-        target_branch="muon"
+        git fetch origin muon
+        if git show-ref --verify --quiet "refs/heads/muon"; then
+          git checkout muon
+        else
+          git checkout -B muon origin/muon
+        fi
+        git pull --ff-only origin muon || true
+        return
         ;;
       false)
-        target_branch="main"
         ;;
       *)
         echo "ERROR: USE_MUON_BRANCH must be one of: true, false, or unset. Got: $USE_MUON_BRANCH" >&2
@@ -151,18 +157,8 @@ sync_repo_branch() {
     esac
   fi
 
-  if [[ -z "$target_branch" ]]; then
-    git pull --ff-only || true
-    return
-  fi
-
-  git fetch origin "$target_branch"
-  if git show-ref --verify --quiet "refs/heads/${target_branch}"; then
-    git checkout "$target_branch"
-  else
-    git checkout -B "$target_branch" "origin/${target_branch}"
-  fi
-  git pull --ff-only origin "$target_branch" || true
+  git fetch origin main
+  git checkout --detach "$pinned_main_commit"
 }
 
 ensure_setup() {
