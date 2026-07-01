@@ -38,7 +38,43 @@ def _sanitize_exp_tag(raw):
     return cleaned or 'default'
 
 
+def _is_truthy(raw):
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+
+
+def _bucket_name_from_gs_uri(uri):
+    if not uri or not uri.startswith('gs://'):
+        return None
+    stripped = uri[len('gs://'):]
+    bucket_name = stripped.split('/', 1)[0]
+    return bucket_name or None
+
+
+def _checkpoint_bucket_iam_bindings(checkpoint_root, bucket_project_id):
+    checkpoint_bucket = _bucket_name_from_gs_uri(checkpoint_root)
+    if not checkpoint_bucket:
+        return []
+
+    bindings = [
+        {
+            'bucket': checkpoint_bucket,
+            'project_id': bucket_project_id,
+            'role': 'roles/storage.objectAdmin',
+        },
+    ]
+    if _is_truthy(os.environ.get('GRANT_CHECKPOINT_BUCKET_STORAGE_ADMIN', 'false')):
+        bindings.append(
+            {
+                'bucket': checkpoint_bucket,
+                'project_id': bucket_project_id,
+                'role': 'roles/storage.admin',
+            }
+        )
+    return bindings
+
+
 project_id =  os.environ.get('GCP_PROJECT_ID', 'loss-spikes')
+bucket_project_id = os.environ.get('BUCKET_PROJECT_ID', 'loss-spikes')
 tpu_type =  os.environ.get('TPU_TYPE', 'v6e-16')
 base_dir = Path(__file__).resolve().parent
 wandb_token = os.environ.get('WANDB_TOKEN') or _read_env_key(base_dir / '.env', 'WANDB_TOKEN')
@@ -133,6 +169,7 @@ follow_logs_command_by_idx = {}
 healthcheck_command_by_idx = {}
 completion_command_by_idx = {}
 checkpoint_root_by_region = {}
+bucket_iam_bindings_by_idx = {}
 babysit_idxs = seed_idxs
 
 if sequential_seeds_on_single_tpu:
@@ -152,8 +189,12 @@ if sequential_seeds_on_single_tpu:
         shared_checkpoint_root = checkpoint_root
     else:
         # force fineweb bucket to be in loss spikes
-        fineweb_bucket = tn.get_fineweb_bucket_name(controller_zone, project_id='loss-spikes')
+        fineweb_bucket = tn.get_fineweb_bucket_name(controller_zone, project_id=bucket_project_id)
         shared_checkpoint_root = f'gs://{fineweb_bucket}/picodo_ckpts'
+    bucket_iam_bindings_by_idx[controller_seed] = _checkpoint_bucket_iam_bindings(
+        shared_checkpoint_root,
+        bucket_project_id,
+    )
 
     seed_queue_csv = ','.join(str(seed) for seed in seed_idxs)
     seed_queue_slug = '-'.join(str(seed) for seed in seed_idxs)
@@ -242,9 +283,13 @@ else:
         else:
             if seed_region not in checkpoint_root_by_region:
                 # force fineweb bucket to be in loss spikes
-                fineweb_bucket = tn.get_fineweb_bucket_name(seed_zone, project_id='loss-spikes')
+                fineweb_bucket = tn.get_fineweb_bucket_name(seed_zone, project_id=bucket_project_id)
                 checkpoint_root_by_region[seed_region] = f'gs://{fineweb_bucket}/picodo_ckpts'
             seed_checkpoint_root = checkpoint_root_by_region[seed_region]
+        bucket_iam_bindings_by_idx[seed] = _checkpoint_bucket_iam_bindings(
+            seed_checkpoint_root,
+            bucket_project_id,
+        )
 
         env_exports = {
             'SEED': str(seed),
@@ -325,6 +370,7 @@ tn.babysit(
     delete_on_completion=True,
     zones_by_idx=zones_by_idx,
     tpu_id_prefix=tpu_id_prefix,
+    bucket_iam_bindings_by_idx=bucket_iam_bindings_by_idx,
     # ssh_script='cd loss-spikes-project/picodo && git pull',
     # ssh_script="pkill -9 python3 || true",
     startup_script=None,

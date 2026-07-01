@@ -32,6 +32,75 @@ def _run_gcloud(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
+def _describe_tpu_service_account(tpu_id, zone, project_id):
+    commands = [
+        [
+            'gcloud', 'compute', 'tpus', 'tpu-vm', 'describe', tpu_id,
+            f'--zone={zone}',
+            f'--project={project_id}',
+            '--format=value(serviceAccount.email)',
+        ],
+        [
+            'gcloud', 'alpha', 'compute', 'tpus', 'tpu-vm', 'describe', tpu_id,
+            f'--zone={zone}',
+            f'--project={project_id}',
+            '--format=value(serviceAccount.email)',
+        ],
+    ]
+    errors = []
+    for cmd in commands:
+        result = _run_gcloud(cmd)
+        service_account = result.stdout.strip()
+        if result.returncode == 0 and service_account:
+            return service_account
+        errors.append(result.stderr.strip() or result.stdout.strip())
+
+    raise RuntimeError(
+        f'Failed to resolve TPU VM service account for {tpu_id}: '
+        + ' | '.join(error for error in errors if error)
+    )
+
+
+def _add_bucket_iam_binding(bucket_name, bucket_project_id, service_account_email, role):
+    print(
+        f'[iam] granting {role} on gs://{bucket_name} in project {bucket_project_id} '
+        f'to {service_account_email}...'
+    )
+    result = _run_gcloud([
+        'gcloud', 'storage', 'buckets', 'add-iam-policy-binding', f'gs://{bucket_name}',
+        f'--member=serviceAccount:{service_account_email}',
+        f'--role={role}',
+        f'--project={bucket_project_id}',
+        '--quiet',
+    ])
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(
+            f'Failed to grant {role} on gs://{bucket_name}: {message}'
+        )
+
+
+def _ensure_tpu_bucket_iam(tpu_id, zone, project_id, bucket_iam_bindings):
+    if not bucket_iam_bindings:
+        return
+
+    service_account = _describe_tpu_service_account(tpu_id, zone, project_id)
+    print(f'[{tpu_id}] TPU service account: {service_account}')
+
+    seen = set()
+    for binding in bucket_iam_bindings:
+        bucket_name = binding['bucket']
+        bucket_project_id = binding.get('project_id') or project_id
+        role = binding['role']
+        key = (bucket_name, bucket_project_id, role)
+        if key in seen:
+            continue
+        seen.add(key)
+        _add_bucket_iam_binding(bucket_name, bucket_project_id, service_account, role)
+
+    print(f'[{tpu_id}] bucket IAM setup complete.')
+
+
 def _sanitize_bucket_name(value):
     cleaned = re.sub(r'[^a-z0-9-]', '-', value.lower())
     cleaned = re.sub(r'-+', '-', cleaned).strip('-')
@@ -511,10 +580,12 @@ def _babysit(
     fineweb_cache_config=None,
     ssh_worker='all',
     follow_logs_worker='all',
+    bucket_iam_bindings=None,
 ):
     """(Re)creates TPU and runs `ssh_script`."""
     qr_name = f'projects/{project_id}/locations/{zone}/queuedResources/{tpu_id}'
     ran_ssh_script = False
+    applied_bucket_iam = False
     follow_logs_thread = None
     wrapped_ssh_script = ssh_script
     if ssh_script is not None and fineweb_cache_config is not None:
@@ -532,7 +603,9 @@ def _babysit(
             stop_event.wait(10)
             continue
         print(f'[{tpu_id}] TPU status: {create_status}')
-        if create_status != 'exists': ran_ssh_script = False
+        if create_status != 'exists':
+            ran_ssh_script = False
+            applied_bucket_iam = False
         elif ran_ssh_script:
             if completion_command is not None:
                 completion_result = _run(
@@ -584,6 +657,20 @@ def _babysit(
                 stop_event.wait(10)
 
             if stop_event.is_set(): break
+
+            if bucket_iam_bindings and not applied_bucket_iam:
+                try:
+                    _ensure_tpu_bucket_iam(
+                        tpu_id,
+                        zone,
+                        project_id,
+                        bucket_iam_bindings,
+                    )
+                    applied_bucket_iam = True
+                except Exception as e:
+                    print(f'[{tpu_id}] bucket IAM setup failed: {e}')
+                    stop_event.wait(30)
+                    continue
 
             if fineweb_cache_config is not None:
                 prefetch_cmd = _fineweb_prefetch_command(fineweb_cache_config)
@@ -642,6 +729,7 @@ def babysit(
     delete_on_completion=True,
     tpu_id_prefix='tn',
     ensure_fineweb_cache=True,
+    bucket_iam_bindings_by_idx=None,
 ):
     """Keeps multiple TPUs alive, optionally running per-index `ssh_script` and `startup_script` on boot."""
     global _stop_event, _threads
@@ -660,6 +748,7 @@ def babysit(
     healthcheck_command_by_idx = healthcheck_command_by_idx or {}
     completion_command_by_idx = completion_command_by_idx or {}
     ssh_worker_by_idx = ssh_worker_by_idx or {}
+    bucket_iam_bindings_by_idx = bucket_iam_bindings_by_idx or {}
     fineweb_cache_by_idx = {}
     zones_to_use = sorted({zones_by_idx.get(idx, zone) for idx in idxs})
 
@@ -709,6 +798,7 @@ def babysit(
         idx_completion_command = completion_command_by_idx.get(idx, completion_command)
         idx_ssh_worker = ssh_worker_by_idx.get(idx, ssh_worker)
         idx_fineweb_cache_config = fineweb_cache_by_idx.get(idx)
+        idx_bucket_iam_bindings = bucket_iam_bindings_by_idx.get(idx, [])
         tpu_id = f'{tpu_id_prefix}-{tpu_type}-{idx}'
         thread = threading.Thread(
             target=_babysit,
@@ -727,6 +817,7 @@ def babysit(
                 idx_fineweb_cache_config,
                 idx_ssh_worker,
                 idx_follow_logs_worker,
+                idx_bucket_iam_bindings,
             ),
             daemon=True,
         )

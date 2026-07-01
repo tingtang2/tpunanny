@@ -25,6 +25,7 @@ CONFIG_NAME="${CONFIG_NAME:-wortsman_default}"
 EVAL_FREQ="${EVAL_FREQ:-100}"
 CHECKPOINT_FREQ="${CHECKPOINT_FREQ:-10000}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-}"
+SKIP_CKPT_BUCKET_IAM_SETUP="${SKIP_CKPT_BUCKET_IAM_SETUP:-true}"
 if [[ -z "$CHECKPOINT_ROOT" ]] && [[ -n "${TPUNANNY_FINEWEB_BUCKET_OBJECT:-}" ]] && [[ "$TPUNANNY_FINEWEB_BUCKET_OBJECT" == gs://* ]]; then
   FINEWEB_URI_STRIPPED="${TPUNANNY_FINEWEB_BUCKET_OBJECT#gs://}"
   FINEWEB_BUCKET="${FINEWEB_URI_STRIPPED%%/*}"
@@ -82,6 +83,7 @@ TPUNANNY_SEED_QUEUE_WORKER="${TPUNANNY_SEED_QUEUE_WORKER:-false}"
 
 export SEED LR_TAG LR_ARG RUN_NAME_PREFIX NUM_TP_DEVICES BATCH_SIZE WANDB_MODE CONFIG_NAME
 export EVAL_FREQ CHECKPOINT_FREQ CHECKPOINT_ROOT USE_CHINCHILLA USE_Z_LOSS
+export SKIP_CKPT_BUCKET_IAM_SETUP
 export USE_LOG_METRICS_PER_STEP LM_HEAD_GRADIENT_CENTERING_ARG
 export LM_HEAD_WEIGHTED_COLUMNWISE_GRADIENT_CENTERING_ARG USE_MU_CENTERING
 export USE_LM_HEAD_SGD_MOMENTUM
@@ -203,10 +205,14 @@ ensure_setup() {
   PROBE_URI="gs://${CHECKPOINT_BUCKET}/${PROBE_OBJECT}"
 
   if [[ "$WORKER_ID" == "0" ]]; then
-    gcloud storage buckets add-iam-policy-binding "gs://${CHECKPOINT_BUCKET}" \
-      --member="serviceAccount:${SA_EMAIL}" \
-      --role="roles/storage.objectAdmin" \
-      --project="${PROJECT_ID}" || true
+    if [[ "${SKIP_CKPT_BUCKET_IAM_SETUP,,}" != "true" ]]; then
+      gcloud storage buckets add-iam-policy-binding "gs://${CHECKPOINT_BUCKET}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="roles/storage.objectAdmin" \
+        --project="${PROJECT_ID}" || true
+    else
+      echo "Skipping checkpoint bucket IAM setup (SKIP_CKPT_BUCKET_IAM_SETUP=${SKIP_CKPT_BUCKET_IAM_SETUP})."
+    fi
 
     echo "ok $(date -u +%FT%TZ)" | gcloud storage cp - "${PROBE_URI}"
     gcloud storage cat "${PROBE_URI}" >/dev/null
