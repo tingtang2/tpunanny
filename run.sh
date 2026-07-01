@@ -134,7 +134,7 @@ apt_with_retry() {
 }
 
 sync_repo_branch() {
-  local pinned_main_commit="81823a2f01ebf36a1bbb6aeace97d030c384edf7"
+  # local pinned_main_commit="81823a2f01ebf36a1bbb6aeace97d030c384edf7"
 
   if [[ -n "$USE_MUON_BRANCH" ]]; then
     case "${USE_MUON_BRANCH,,}" in
@@ -158,7 +158,7 @@ sync_repo_branch() {
   fi
 
   git fetch origin main
-  git checkout --detach "$pinned_main_commit"
+  # git checkout --detach "$pinned_main_commit"
 }
 
 ensure_setup() {
